@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Play, Pause, Search, Settings, User, LogOut, Plus, KeyRound, Clapperboard, Maximize, Gauge, SkipForward, Cog, Loader2, Subtitles } from "lucide-react";
+import { Play, Pause, Search, Settings, User, LogOut, Plus, KeyRound, Clapperboard, Maximize, Gauge, SkipForward, Cog, Loader2, Subtitles, Languages } from "lucide-react";
 import { api, clearSession, getProfile, setSession } from "./api";
 import "./styles.css";
 
@@ -39,14 +39,27 @@ function episodeLabel(ep) {
 
 function languageName(value) {
   const code = String(value || "").toLowerCase();
-  const map = { pl: "Polski", pol: "Polski", en: "Angielski", eng: "Angielski", de: "Niemiecki", ger: "Niemiecki", deu: "Niemiecki", es: "Hiszpański", fr: "Francuski", it: "Włoski", uk: "Ukraiński", ru: "Rosyjski" };
+  const map = { pl: "Polski", pol: "Polski", polish: "Polski", polski: "Polski", en: "Angielski", eng: "Angielski", english: "Angielski", de: "Niemiecki", ger: "Niemiecki", deu: "Niemiecki", es: "Hiszpański", fr: "Francuski", it: "Włoski", uk: "Ukraiński", ru: "Rosyjski" };
   return map[code] || value || "Nieznany język";
+}
+
+function languageScore(track) {
+  const text = `${track.language || ""} ${track.label || ""}`.toLowerCase();
+  if (/(^|\b)(pl|pol|polish|polski)(\b|$)/.test(text)) return 0;
+  if (/(^|\b)(en|eng|english|angielski)(\b|$)/.test(text)) return 1;
+  return 2;
 }
 
 function addonSubtitleLabel(sub, index) {
   const lang = languageName(sub.lang || sub.language || sub.langCode || sub.iso || sub.id);
   const name = sub.name || sub.title || sub.addon || `Napisy ${index + 1}`;
   return `Addon • ${lang} • ${name}`;
+}
+
+function audioTrackLabel(track, index) {
+  const lang = languageName(track.language);
+  const label = track.label || `Ścieżka ${index + 1}`;
+  return `${lang} • ${label}`;
 }
 
 function playableFrom(meta, target, fallbackType) {
@@ -146,6 +159,8 @@ function Player({ item, initialStreams, profile, onClose, onLimitUpdate }) {
   const [subtitles, setSubtitles] = useState([]);
   const [embeddedTracks, setEmbeddedTracks] = useState([]);
   const [subtitleChoice, setSubtitleChoice] = useState("off");
+  const [audioTracks, setAudioTracks] = useState([]);
+  const [audioChoice, setAudioChoice] = useState("auto");
   const [notice, setNotice] = useState("");
   const [visible, setVisible] = useState(true);
   const [playing, setPlaying] = useState(false);
@@ -163,11 +178,33 @@ function Player({ item, initialStreams, profile, onClose, onLimitUpdate }) {
     const list = Array.from(tracks).map((track, index) => ({ index, label: track.label || languageName(track.language) || `Ścieżka ${index + 1}`, language: track.language })).filter((track) => !String(track.label || "").startsWith("Addon •"));
     setEmbeddedTracks(list);
   }
+  function readAudioTracks() {
+    const tracks = videoRef.current?.audioTracks;
+    if (!tracks || typeof tracks.length !== "number") { setAudioTracks([]); return []; }
+    const list = Array.from(tracks).map((track, index) => ({ index, id: track.id, label: track.label || `Audio ${index + 1}`, language: track.language || "", enabled: track.enabled }));
+    setAudioTracks(list);
+    return list;
+  }
+  function applyAudioChoice(value) {
+    const tracks = videoRef.current?.audioTracks;
+    if (!tracks || typeof tracks.length !== "number") return;
+    const index = value === "auto" ? -1 : Number(String(value).replace("audio:", ""));
+    for (let i = 0; i < tracks.length; i += 1) tracks[i].enabled = i === index;
+    setAudioTracks(Array.from(tracks).map((track, i) => ({ index: i, id: track.id, label: track.label || `Audio ${i + 1}`, language: track.language || "", enabled: track.enabled })));
+  }
+  function choosePreferredAudio() {
+    const list = readAudioTracks();
+    if (!list.length) return;
+    const preferred = [...list].sort((a, b) => languageScore(a) - languageScore(b))[0] || list[0];
+    const choice = `audio:${preferred.index}`;
+    setAudioChoice(choice);
+    setTimeout(() => applyAudioChoice(choice), 0);
+  }
   async function fetchStreamsOnce(active) { const data = await api(`/streams/${item.type || "movie"}/${encodeURIComponent(item.id)}`); if (!active()) return []; const nextStreams = data.streams || []; setStreams(nextStreams); setStreamIndex(0); return nextStreams; }
   useEffect(() => {
     let active = true;
     const isActive = () => active;
-    setStreams([]); setStreamIndex(0); setSubtitles([]); setEmbeddedTracks([]); setSubtitleChoice("off"); setLoading(true); setRetryCountdown(null); setFinalNoSources(false); setNotice("");
+    setStreams([]); setStreamIndex(0); setSubtitles([]); setEmbeddedTracks([]); setSubtitleChoice("off"); setAudioTracks([]); setAudioChoice("auto"); setLoading(true); setRetryCountdown(null); setFinalNoSources(false); setNotice("");
     async function runStreamSearch() {
       try { const first = await fetchStreamsOnce(isActive); if (!isActive() || first.length > 0) return; for (let remaining = 60; remaining > 0; remaining -= 1) { if (!isActive()) return; setRetryCountdown(remaining); await sleep(1000); } if (!isActive()) return; setRetryCountdown(0); setLoading(true); const second = await fetchStreamsOnce(isActive); if (!isActive()) return; if (second.length === 0) setFinalNoSources(true); }
       catch { if (isActive()) setFinalNoSources(true); }
@@ -179,6 +216,8 @@ function Player({ item, initialStreams, profile, onClose, onLimitUpdate }) {
     return () => { active = false; };
   }, [item.id, item.type]);
   useEffect(() => { setTimeout(updateEmbeddedTracks, 250); const tracks = videoRef.current?.textTracks; tracks?.addEventListener?.("addtrack", updateEmbeddedTracks); tracks?.addEventListener?.("change", updateEmbeddedTracks); return () => { tracks?.removeEventListener?.("addtrack", updateEmbeddedTracks); tracks?.removeEventListener?.("change", updateEmbeddedTracks); }; }, [stream?.url, subtitles.length]);
+  useEffect(() => { setTimeout(choosePreferredAudio, 400); const tracks = videoRef.current?.audioTracks; const refresh = () => { readAudioTracks(); if (audioChoice === "auto") choosePreferredAudio(); }; tracks?.addEventListener?.("addtrack", refresh); tracks?.addEventListener?.("change", readAudioTracks); return () => { tracks?.removeEventListener?.("addtrack", refresh); tracks?.removeEventListener?.("change", readAudioTracks); }; }, [stream?.url]);
+  useEffect(() => { if (audioChoice !== "auto") applyAudioChoice(audioChoice); }, [audioChoice]);
   useEffect(() => {
     const tracks = videoRef.current?.textTracks;
     if (!tracks) return;
@@ -199,7 +238,7 @@ function Player({ item, initialStreams, profile, onClose, onLimitUpdate }) {
   function seek(e) { const v = videoRef.current; if (!v || !duration) return; v.currentTime = Number(e.target.value); setTime(v.currentTime); }
   function fullscreen() { const shell = videoRef.current?.parentElement; shell?.requestFullscreen?.(); }
   const statusText = retryCountdown !== null ? `Nie znaleziono źródeł. Ponawiam wyszukiwanie za ${retryCountdown}s...` : finalNoSources ? "Brak źródeł do tego tytułu" : "Szukam źródeł...";
-  return <main className="player-page"><button className="link back" onClick={onClose}>← Zamknij odtwarzacz</button><h1>{item.name}</h1>{notice && <div className="toast">{notice}</div>}<div className={`player-shell ${visible ? "controls-visible" : "controls-hidden"}`} onMouseMove={showControls} onClick={showControls} onTouchStart={showControls}><video key={`${item.type}-${item.id}-${stream?.url || "empty"}`} ref={videoRef} src={stream?.url || undefined} controls={false} poster={item.background || item.poster} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onWaiting={() => setLoading(true)} onCanPlay={() => { setLoading(false); updateEmbeddedTracks(); }} onLoadedMetadata={(e) => { setDuration(e.currentTarget.duration || 0); updateEmbeddedTracks(); }} onLoadedData={updateEmbeddedTracks} onTimeUpdate={(e) => setTime(e.currentTarget.currentTime || 0)}>{subtitles.map((sub, i) => <track key={`${sub.url || sub.file}-${i}`} kind="subtitles" src={sub.url || sub.file} srcLang={sub.lang || sub.language || "pl"} label={addonSubtitleLabel(sub, i)} />)}</video>{(loading || !stream?.url || retryCountdown !== null || finalNoSources) && <div className="loading-overlay"><Loader2 className={finalNoSources ? "" : "spin"} /><span>{statusText}</span></div>}<div className="player-controls glass"><div className="timeline-row"><span>{fmt(time)}</span><input className="timeline" type="range" min="0" max={duration || 0} step="1" value={time} onChange={seek} /><span>{fmt(duration)}</span></div><div className="controls-row"><button onClick={toggle}>{playing ? <Pause /> : <Play />}</button><button title="Poprzedni odcinek"><SkipForward className="flip" /></button><button title="Następny odcinek"><SkipForward /></button><label className="compact-select"><Cog size={18} /><select value={streamIndex} onChange={(e) => setStreamIndex(Number(e.target.value))}>{streams.map((s, i) => <option key={i} value={i}>{s.name || s.title || s.addon || `Stream ${i + 1}`}</option>)}</select></label><label className="compact-select"><Subtitles size={18} /><select value={subtitleChoice} onChange={(e) => setSubtitleChoice(e.target.value)}><option value="off">Napisy wył.</option>{embeddedTracks.map((track) => <option key={`embedded-${track.index}`} value={`embedded:${track.index}`}>Film • {languageName(track.language)} • {track.label}</option>)}{subtitles.map((s, i) => <option key={`addon-${i}`} value={`addon:${i}`}>Addon • {languageName(s.lang || s.language || s.langCode || s.iso)} • {s.name || s.title || s.addon || `Napisy ${i + 1}`}</option>)}</select></label><label className="speed"><Gauge size={16} /><select onChange={(e) => { if (videoRef.current) videoRef.current.playbackRate = Number(e.target.value); }}><option value="1">1x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="2">2x</option></select></label><button title="Pomiń intro" className="intro">Pomiń intro</button><button onClick={fullscreen}><Maximize /></button></div></div></div></main>;
+  return <main className="player-page"><button className="link back" onClick={onClose}>← Zamknij odtwarzacz</button><h1>{item.name}</h1>{notice && <div className="toast">{notice}</div>}<div className={`player-shell ${visible ? "controls-visible" : "controls-hidden"}`} onMouseMove={showControls} onClick={showControls} onTouchStart={showControls}><video key={`${item.type}-${item.id}-${stream?.url || "empty"}`} ref={videoRef} src={stream?.url || undefined} controls={false} poster={item.background || item.poster} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onWaiting={() => setLoading(true)} onCanPlay={() => { setLoading(false); updateEmbeddedTracks(); choosePreferredAudio(); }} onLoadedMetadata={(e) => { setDuration(e.currentTarget.duration || 0); updateEmbeddedTracks(); choosePreferredAudio(); }} onLoadedData={() => { updateEmbeddedTracks(); choosePreferredAudio(); }} onTimeUpdate={(e) => setTime(e.currentTarget.currentTime || 0)}>{subtitles.map((sub, i) => <track key={`${sub.url || sub.file}-${i}`} kind="subtitles" src={sub.url || sub.file} srcLang={sub.lang || sub.language || "pl"} label={addonSubtitleLabel(sub, i)} />)}</video>{(loading || !stream?.url || retryCountdown !== null || finalNoSources) && <div className="loading-overlay"><Loader2 className={finalNoSources ? "" : "spin"} /><span>{statusText}</span></div>}<div className="player-controls glass"><div className="timeline-row"><span>{fmt(time)}</span><input className="timeline" type="range" min="0" max={duration || 0} step="1" value={time} onChange={seek} /><span>{fmt(duration)}</span></div><div className="controls-row"><button onClick={toggle}>{playing ? <Pause /> : <Play />}</button><button title="Poprzedni odcinek"><SkipForward className="flip" /></button><button title="Następny odcinek"><SkipForward /></button><label className="compact-select"><Cog size={18} /><select value={streamIndex} onChange={(e) => setStreamIndex(Number(e.target.value))}>{streams.map((s, i) => <option key={i} value={i}>{s.name || s.title || s.addon || `Stream ${i + 1}`}</option>)}</select></label><label className="compact-select"><Languages size={18} /><select value={audioChoice} onChange={(e) => setAudioChoice(e.target.value)}><option value="auto">Audio auto</option>{audioTracks.map((track, i) => <option key={`audio-${track.index}`} value={`audio:${track.index}`}>{audioTrackLabel(track, i)}</option>)}</select></label><label className="compact-select"><Subtitles size={18} /><select value={subtitleChoice} onChange={(e) => setSubtitleChoice(e.target.value)}><option value="off">Napisy wył.</option>{embeddedTracks.map((track) => <option key={`embedded-${track.index}`} value={`embedded:${track.index}`}>Film • {languageName(track.language)} • {track.label}</option>)}{subtitles.map((s, i) => <option key={`addon-${i}`} value={`addon:${i}`}>Addon • {languageName(s.lang || s.language || s.langCode || s.iso)} • {s.name || s.title || s.addon || `Napisy ${i + 1}`}</option>)}</select></label><label className="speed"><Gauge size={16} /><select onChange={(e) => { if (videoRef.current) videoRef.current.playbackRate = Number(e.target.value); }}><option value="1">1x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="2">2x</option></select></label><button title="Pomiń intro" className="intro">Pomiń intro</button><button onClick={fullscreen}><Maximize /></button></div></div></div></main>;
 }
 
 function AdminPanel({ onClose, libraries, settings, onSettingsSaved }) {
