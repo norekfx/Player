@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from .addons import AddonError, fetch_catalog, fetch_manifest, fetch_meta, fetch_streams, fetch_subtitles, normalize_addon_url
+from .addons import AddonError, fetch_catalog, fetch_manifest, fetch_meta, fetch_search, fetch_streams, fetch_subtitles, normalize_addon_url
 from .config import get_settings
 from .db import create_db_and_tables, get_session
 from .models import Addon, AppSetting, GuestProfile, PlaybackHistory, SearchLog, User
@@ -273,18 +273,34 @@ async def search(payload: SearchRequest, actor: dict = Depends(require_actor), s
     session.commit()
     addons = session.exec(select(Addon).where(Addon.enabled == True)).all()
     results: list[dict] = []
+    seen: set[str] = set()
     needle = payload.query.lower()
     for addon in addons:
         manifest = json.loads(addon.manifest_json)
         for catalog in manifest.get("catalogs", []):
+            catalog_type = catalog.get("type", "movie")
+            catalog_id = catalog.get("id")
+            data = None
             try:
-                data = await fetch_catalog(addon.url, catalog.get("type", "movie"), catalog.get("id"))
-                for item in data.get("metas", []):
-                    if needle in str(item.get("name", "")).lower() or needle in str(item.get("description", "")).lower():
-                        results.append({**item, "addon": addon.name, "type": catalog.get("type", "movie")})
+                data = await fetch_search(addon.url, catalog_type, catalog_id, payload.query)
             except Exception:
-                continue
-    return {"results": results}
+                try:
+                    data = await fetch_catalog(addon.url, catalog_type, catalog_id)
+                except Exception:
+                    data = None
+            for item in (data or {}).get("metas", []):
+                if data is None:
+                    continue
+                if "search=" not in str(data) and needle not in str(item.get("name", "")).lower() and needle not in str(item.get("description", "")).lower():
+                    continue
+                key = f"{catalog_type}:{item.get('id')}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append({**item, "type": catalog_type})
+    movies = [r for r in results if r.get("type") == "movie"]
+    series = [r for r in results if r.get("type") in ("series", "show", "tv")]
+    return {"results": results, "movies": movies, "series": series}
 
 
 @app.get("/api/meta/{content_type}/{content_id}")
