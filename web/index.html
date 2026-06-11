@@ -267,5 +267,68 @@
         setInterval(() => { chooseCompatibleStream('codec'); checkSilentAudio(); }, 2500);
       })();
     </script>
+    <script>
+      (() => {
+        const BAD_AUDIO = /(AC[- ]?3|E[- ]?AC[- ]?3|EAC3|DTS|TRUEHD|AC3)/i;
+        const POPUP_KEY = 'player_audio_codec_popup_seen_v1';
+        function getSeen() { try { return JSON.parse(sessionStorage.getItem(POPUP_KEY) || '{}'); } catch { return {}; } }
+        function setSeen(key) { const seen = getSeen(); seen[key] = Date.now(); sessionStorage.setItem(POPUP_KEY, JSON.stringify(seen)); }
+        function getSelectedStreamText() {
+          const selects = [...document.querySelectorAll('.player-page .compact-select select')];
+          const select = selects.find((s) => [...s.options].some((o) => BAD_AUDIO.test(o.textContent || '') || /Torrentio|BluRay|WEB|Stream/i.test(o.textContent || '')));
+          const option = select ? ([...select.options].find((o) => o.selected) || select.options[Number(select.value)] || select.options[0]) : null;
+          return { select, option, text: option?.textContent || '' };
+        }
+        function detectCodec(text) {
+          const match = String(text || '').match(BAD_AUDIO);
+          if (!match) return '';
+          const raw = match[1].toUpperCase().replace(/\s+/g, '-');
+          if (raw === 'AC3') return 'AC-3';
+          if (raw === 'EAC3' || raw === 'E-AC-3') return 'EAC3';
+          return raw;
+        }
+        function currentStreamUrl() {
+          const video = document.querySelector('.player-page video');
+          return video?.currentSrc || video?.src || '';
+        }
+        function popupKey(codec, text) {
+          const title = document.querySelector('.player-page h1')?.textContent?.trim() || 'unknown';
+          return `${title}|${codec}|${text.slice(0, 120)}`;
+        }
+        function closePopup() { document.querySelector('.audio-codec-modal')?.remove(); }
+        function showPopup(codec, text) {
+          const key = popupKey(codec, text);
+          if (getSeen()[key] || document.querySelector('.audio-codec-modal')) return;
+          setSeen(key);
+          const url = currentStreamUrl();
+          const backdrop = document.createElement('div');
+          backdrop.className = 'modal-backdrop audio-codec-modal';
+          backdrop.innerHTML = `
+            <div class="modal glass">
+              <h2>Możliwy problem z dźwiękiem</h2>
+              <p>Wykryto kodek audio <strong>${codec}</strong>. Przeglądarka może nie odtworzyć dźwięku dla tego źródła.</p>
+              <p>Możesz zamknąć ten komunikat i zmienić jakość ręcznie albo pobrać film i odtworzyć go w zewnętrznym odtwarzaczu.</p>
+              <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+                <button class="primary audio-codec-close" type="button">Zamknij</button>
+                <button class="danger audio-codec-download" type="button">Pobierz</button>
+              </div>
+            </div>`;
+          backdrop.querySelector('.audio-codec-close').addEventListener('click', closePopup);
+          backdrop.querySelector('.audio-codec-download').addEventListener('click', () => {
+            if (url) window.open(url, '_blank', 'noopener,noreferrer');
+            closePopup();
+          });
+          document.body.appendChild(backdrop);
+        }
+        function check() {
+          const { text } = getSelectedStreamText();
+          const codec = detectCodec(text);
+          if (codec) showPopup(codec, text);
+        }
+        const observer = new MutationObserver(check);
+        observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+        setInterval(check, 2000);
+      })();
+    </script>
   </body>
 </html>
