@@ -10,6 +10,9 @@ export function setSession(token, profile) {
   localStorage.setItem("player_profile", JSON.stringify(profile));
   localStorage.removeItem(UI_KEY);
   sessionStorage.setItem("player_just_logged_in", "1");
+  if (typeof window !== "undefined") {
+    window.location.replace(window.location.pathname || "/");
+  }
 }
 
 export function clearSession() {
