@@ -19,11 +19,173 @@
       .panel button:not(.primary):not(.danger):not(.link) { border: 0; border-radius: 999px; background: rgba(255,255,255,.08); color: white; padding: 10px 14px; margin: 6px 6px 0 0; font-weight: 800; }
       .panel button:not(.primary):not(.danger):not(.link):hover { background: rgba(255,255,255,.14); }
       .admin h3 { margin-top: 24px; }
+      .guest-code-box { margin: 12px 0; padding: 14px; border-radius: 16px; background: #e50914; color: white; font-weight: 900; letter-spacing: .08em; display: inline-block; }
+      .allowed-card { display: grid; grid-template-columns: 58px 1fr; gap: 10px; align-items: center; }
+      .allowed-card img { width: 58px; height: 86px; object-fit: cover; border-radius: 8px; background: #222; }
+      .guest-helper-panel { border-top: 1px solid rgba(255,255,255,.08); padding-top: 12px; margin-top: 14px; }
       @media (max-width: 760px) { .modal { padding: 22px; } .check-list { max-height: 210px; } }
     </style>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      (() => {
+        const API_BASE = '/api';
+        const token = () => localStorage.getItem('player_token') || '';
+        const api = async (path, options = {}) => {
+          const res = await fetch(API_BASE + path, { ...options, headers: { 'Content-Type': 'application/json', ...(token() ? { Authorization: 'Bearer ' + token() } : {}), ...(options.headers || {}) } });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : data.detail?.message || 'Błąd API');
+          return data;
+        };
+        let guestsCache = [];
+        let librariesCache = [];
+        async function refreshCaches() {
+          try { guestsCache = (await api('/admin/guests')).guests || []; } catch {}
+          try { librariesCache = (await api('/catalogs')).libraries || []; } catch {}
+        }
+        function text(el) { return (el?.textContent || '').trim(); }
+        function guestName(g) { return g.display_name || 'Bez nazwy'; }
+        function findGuestByName(name) {
+          const trimmed = (name || '').trim();
+          return guestsCache.find(g => (g.display_name || 'Bez nazwy') === trimmed) || guestsCache.find(g => String(g.id) === trimmed);
+        }
+        function enhanceGuestList() {
+          const headings = [...document.querySelectorAll('h2')];
+          const guestPanel = headings.find(h => text(h).includes('Goście'))?.closest('.panel');
+          if (!guestPanel || guestPanel.dataset.modifyEnhanced) return;
+          guestPanel.dataset.modifyEnhanced = '1';
+          [...guestPanel.querySelectorAll('p')].forEach((p) => {
+            const existing = p.querySelector('button.link');
+            if (!existing || p.querySelector('.modify-guest-btn')) return;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'primary modify-guest-btn';
+            btn.textContent = 'Modyfikuj';
+            btn.style.marginTop = '8px';
+            btn.addEventListener('click', () => existing.click());
+            p.appendChild(document.createElement('br'));
+            p.appendChild(btn);
+          });
+        }
+        function enhanceCreateGuestPopup() {
+          const headings = [...document.querySelectorAll('h2')];
+          const guestPanel = headings.find(h => text(h).includes('Goście'))?.closest('.panel');
+          if (!guestPanel || guestPanel.dataset.createEnhanced) return;
+          const form = guestPanel.querySelector('form');
+          if (!form) return;
+          const nameInput = form.querySelector('input');
+          if (nameInput && nameInput.value === 'Gość') nameInput.value = '';
+          if (nameInput) nameInput.placeholder = 'Nazwa gościa opcjonalnie';
+          guestPanel.dataset.createEnhanced = '1';
+          form.addEventListener('submit', (event) => {
+            if (form.dataset.prompted === '1') { form.dataset.prompted = ''; return; }
+            event.preventDefault();
+            const name = prompt('Podaj nazwę gościa opcjonalnie. Zostaw puste, jeśli ma być bez nazwy.', nameInput?.value || '') ?? '';
+            if (nameInput) nameInput.value = name.trim();
+            form.dataset.prompted = '1';
+            form.requestSubmit();
+          }, true);
+        }
+        async function enhanceGuestDetail() {
+          const main = document.querySelector('main.admin');
+          if (!main || main.dataset.guestDetailEnhanced) return;
+          const h1 = main.querySelector('h1');
+          if (!h1) return;
+          await refreshCaches();
+          const guest = findGuestByName(text(h1));
+          if (!guest) return;
+          main.dataset.guestDetailEnhanced = '1';
+          let detail;
+          try { detail = await api('/admin/guests/' + guest.id); } catch { return; }
+          const firstPanel = main.querySelector('.panel');
+          if (firstPanel && detail.guest?.code && !firstPanel.querySelector('.guest-code-box')) {
+            const box = document.createElement('div');
+            box.className = 'guest-code-box';
+            box.textContent = 'Kod: ' + detail.guest.code;
+            firstPanel.insertBefore(box, firstPanel.children[2] || null);
+          }
+          enhanceAllowedCovers(main, detail);
+          addHiddenLibrariesPanel(main, guest.id, detail.hidden_catalog_keys || []);
+        }
+        function enhanceAllowedCovers(main, detail) {
+          const panel = [...main.querySelectorAll('h2')].find(h => text(h).includes('Ograniczenie treści'))?.closest('.panel');
+          if (!panel || panel.dataset.coversEnhanced) return;
+          panel.dataset.coversEnhanced = '1';
+          const posterByTitle = new Map((detail.allowed || []).map(a => [a.title || a.content_id, a.poster || '']));
+          [...panel.querySelectorAll('p')].forEach((p) => {
+            const strong = p.querySelector('strong');
+            if (!strong) return;
+            const title = text(strong);
+            const poster = posterByTitle.get(title);
+            if (!poster || p.querySelector('img')) return;
+            const wrap = document.createElement('div');
+            wrap.className = 'allowed-card';
+            const img = document.createElement('img');
+            img.src = poster;
+            img.alt = '';
+            const info = document.createElement('div');
+            while (p.firstChild) info.appendChild(p.firstChild);
+            wrap.appendChild(img); wrap.appendChild(info); p.appendChild(wrap);
+          });
+          const searchItems = [...panel.querySelectorAll('p')].filter(p => p.querySelector('button') && !p.querySelector('span'));
+          const results = [...((window.__lastSearchMovies || [])), ...((window.__lastSearchSeries || []))];
+          searchItems.forEach((p) => {
+            const title = text(p.querySelector('strong'));
+            const item = results.find(x => x.name === title);
+            if (!item?.poster || p.querySelector('img')) return;
+            const img = document.createElement('img'); img.src = item.poster; img.alt = ''; img.style.cssText = 'width:58px;height:86px;object-fit:cover;border-radius:8px;margin-right:10px;vertical-align:middle;';
+            p.insertBefore(img, p.firstChild);
+          });
+        }
+        async function addHiddenLibrariesPanel(main, guestId, hiddenKeys) {
+          if (main.querySelector('.guest-helper-panel')) return;
+          const contentPanel = [...main.querySelectorAll('h2')].find(h => text(h).includes('Ograniczenie treści'))?.closest('.panel');
+          if (!contentPanel) return;
+          const box = document.createElement('div');
+          box.className = 'guest-helper-panel';
+          box.innerHTML = '<h3>Wykluczone biblioteki dla tego gościa</h3><p>Wybierz biblioteki addonu, których ten gość nie ma widzieć, np. Anime.</p>';
+          const list = document.createElement('div');
+          list.className = 'check-list';
+          const hidden = new Set(hiddenKeys);
+          librariesCache.forEach((l) => {
+            const label = document.createElement('label');
+            const input = document.createElement('input');
+            input.type = 'checkbox'; input.checked = hidden.has(l.key);
+            input.addEventListener('change', () => input.checked ? hidden.add(l.key) : hidden.delete(l.key));
+            label.appendChild(input);
+            label.appendChild(document.createTextNode(' ' + l.addon + ' — ' + ((l.catalog && (l.catalog.name || l.catalog.id)) || l.key)));
+            list.appendChild(label);
+          });
+          const save = document.createElement('button');
+          save.type = 'button'; save.className = 'primary'; save.textContent = 'Zapisz wykluczone biblioteki';
+          save.addEventListener('click', async () => {
+            await api('/admin/guests/' + guestId + '/hidden-libraries', { method: 'PUT', body: JSON.stringify({ catalog_keys: [...hidden] }) });
+            alert('Zapisano wykluczone biblioteki gościa.');
+          });
+          box.appendChild(list); box.appendChild(save); contentPanel.appendChild(box);
+        }
+        const originalFetch = window.fetch;
+        window.fetch = async (...args) => {
+          const res = await originalFetch(...args);
+          try {
+            const url = String(args[0] || '');
+            if (url.includes('/api/search')) {
+              const clone = res.clone();
+              clone.json().then(data => { window.__lastSearchMovies = data.movies || []; window.__lastSearchSeries = data.series || []; }).catch(() => {});
+            }
+          } catch {}
+          return res;
+        };
+        const observer = new MutationObserver(() => {
+          enhanceGuestList();
+          enhanceCreateGuestPopup();
+          enhanceGuestDetail();
+        });
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+        refreshCaches().then(() => { enhanceGuestList(); enhanceCreateGuestPopup(); enhanceGuestDetail(); });
+      })();
+    </script>
   </body>
 </html>
