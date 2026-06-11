@@ -1,5 +1,6 @@
 const API_BASE = "/api";
 const UI_KEY = "player_ui_state_v1";
+const LIMIT_VIEW_KEY = "player_limit_exhausted_view_v1";
 
 export function getToken() {
   return localStorage.getItem("player_token");
@@ -9,6 +10,7 @@ export function setSession(token, profile) {
   localStorage.setItem("player_token", token);
   localStorage.setItem("player_profile", JSON.stringify(profile));
   localStorage.removeItem(UI_KEY);
+  sessionStorage.removeItem(LIMIT_VIEW_KEY);
   sessionStorage.setItem("player_just_logged_in", "1");
   if (typeof window !== "undefined") {
     window.location.replace(window.location.pathname || "/");
@@ -19,6 +21,7 @@ export function clearSession() {
   localStorage.removeItem("player_token");
   localStorage.removeItem("player_profile");
   localStorage.removeItem(UI_KEY);
+  sessionStorage.removeItem(LIMIT_VIEW_KEY);
 }
 
 export function getProfile() {
@@ -38,11 +41,11 @@ export function consumeJustLoggedIn() {
 function showLimitExhaustedPlayerView() {
   if (typeof document === "undefined") return;
   const page = document.querySelector(".player-page");
-  if (!page || page.querySelector(".limit-exhausted-screen")) return;
+  if (!page) return;
 
-  const shell = page.querySelector(".player-shell");
-  if (shell) shell.remove();
-  page.querySelectorAll(".toast").forEach((node) => node.remove());
+  page.querySelectorAll(".player-shell, .toast").forEach((node) => node.remove());
+  page.querySelectorAll(".limit-exhausted-screen").forEach((node, index) => { if (index > 0) node.remove(); });
+  if (page.querySelector(".limit-exhausted-screen")) return;
 
   const screen = document.createElement("section");
   screen.className = "limit-exhausted-screen glass";
@@ -52,6 +55,24 @@ function showLimitExhaustedPlayerView() {
   const title = page.querySelector("h1");
   if (title?.nextSibling) page.insertBefore(screen, title.nextSibling);
   else page.appendChild(screen);
+}
+
+function markLimitExhaustedView() {
+  if (typeof sessionStorage === "undefined") return;
+  sessionStorage.setItem(LIMIT_VIEW_KEY, "1");
+  showLimitExhaustedPlayerView();
+  const started = Date.now();
+  const id = setInterval(() => {
+    showLimitExhaustedPlayerView();
+    if (Date.now() - started > 10000) clearInterval(id);
+  }, 250);
+}
+
+if (typeof window !== "undefined") {
+  const observer = new MutationObserver(() => {
+    if (sessionStorage.getItem(LIMIT_VIEW_KEY) === "1") showLimitExhaustedPlayerView();
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
 }
 
 async function assertGuestCanRequestStreams(token) {
@@ -74,7 +95,7 @@ async function assertGuestCanRequestStreams(token) {
 
   const remaining = Number(me?.remaining ?? localProfile?.remaining ?? 0);
   if (me?.limit_exhausted || remaining <= 0) {
-    showLimitExhaustedPlayerView();
+    markLimitExhaustedView();
     throw new Error("Skończył się limit :(");
   }
 }
