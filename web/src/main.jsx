@@ -13,15 +13,30 @@ function fmt(seconds = 0) {
 }
 
 function itemType(item) {
-  const type = item.type || item.contentType || item.kind || item.catalogType;
+  const type = item?.type || item?.contentType || item?.kind || item?.catalogType;
   if (["series", "show", "tv"].includes(type)) return "series";
-  return type || (item.videos?.length ? "series" : "movie");
+  return type || (item?.videos?.length ? "series" : "movie");
 }
 
 function episodeLabel(ep) {
   const s = ep.season ?? ep.seasonNumber ?? 1;
   const e = ep.episode ?? ep.episodeNumber ?? ep.number ?? 1;
   return `S${String(s).padStart(2, "0")}E${String(e).padStart(2, "0")}`;
+}
+
+function playableFrom(meta, target, fallbackType) {
+  const type = target.type || fallbackType || itemType(meta);
+  return {
+    ...meta,
+    ...target,
+    id: target.id || meta.id,
+    type,
+    name: target.title || target.name || meta.name,
+    season: target.season ?? target.seasonNumber,
+    episode: target.episode ?? target.episodeNumber ?? target.number,
+    poster: target.poster || target.thumbnail || meta.poster,
+    background: target.background || target.backdrop || meta.background || meta.backdrop,
+  };
 }
 
 function AuthScreen({ onLogin }) {
@@ -80,10 +95,7 @@ function TopBar({ profile, onLogout, onSearch, onSearchPreview, searchPreview, o
 
   function submit(e) {
     e.preventDefault();
-    if (q.trim()) {
-      setFocused(false);
-      onSearch(q.trim());
-    }
+    if (q.trim()) { setFocused(false); onSearch(q.trim()); }
   }
 
   const previewItems = (searchPreview?.results || []).slice(0, 8);
@@ -132,9 +144,7 @@ function Row({ library, onOpen }) {
 function ResultsPage({ query, results, onBack, onOpen }) {
   const movies = results?.movies || [];
   const series = results?.series || [];
-  return <main className="results-page">
-    <button className="link back" onClick={onBack}>← Wróć</button>
-    <h1>Wyniki dla „{query}”</h1>
+  return <main className="results-page"><button className="link back" onClick={onBack}>← Wróć</button><h1>Wyniki dla „{query}”</h1>
     <section className="result-section"><h2>Filmy</h2>{movies.length ? <div className="result-grid">{movies.map((item) => <button className="poster" key={`movie-${item.id}`} onClick={() => onOpen({ ...item, type: "movie" })}>{item.poster ? <img src={item.poster} alt="" /> : <div className="poster-fallback">{item.name}</div>}<strong>{item.name}</strong></button>)}</div> : <p>Brak filmów.</p>}</section>
     <section className="result-section"><h2>Seriale</h2>{series.length ? <div className="result-grid">{series.map((item) => <button className="poster" key={`series-${item.id}`} onClick={() => onOpen({ ...item, type: "series" })}>{item.poster ? <img src={item.poster} alt="" /> : <div className="poster-fallback">{item.name}</div>}<strong>{item.name}</strong></button>)}</div> : <p>Brak seriali.</p>}</section>
   </main>;
@@ -142,7 +152,6 @@ function ResultsPage({ query, results, onBack, onOpen }) {
 
 function Details({ item, history, onBack, onPlay }) {
   const [meta, setMeta] = useState(item);
-  const [streamsById, setStreamsById] = useState({});
   const [loadingIds, setLoadingIds] = useState({});
   const type = itemType(meta);
 
@@ -166,27 +175,20 @@ function Details({ item, history, onBack, onPlay }) {
     return almostFinished ? sorted[idx + 1] || sorted[idx] : sorted[idx];
   }, [videos, last]);
 
-  async function ensureStreams(target) {
-    const id = target.id;
-    if (streamsById[id]?.length) return streamsById[id];
-    setLoadingIds((v) => ({ ...v, [id]: true }));
-    try {
-      const data = await api(`/streams/${target.type || type}/${encodeURIComponent(id)}`);
-      const streams = data.streams || [];
-      setStreamsById((v) => ({ ...v, [id]: streams }));
-      return streams;
-    } finally { setLoadingIds((v) => ({ ...v, [id]: false })); }
+  function preloadStreams(target) {
+    const playable = playableFrom(meta, target, target.type || type);
+    setLoadingIds((v) => ({ ...v, [playable.id]: true }));
+    api(`/streams/${playable.type || type}/${encodeURIComponent(playable.id)}`).catch(() => {}).finally(() => setLoadingIds((v) => ({ ...v, [playable.id]: false })));
   }
 
   useEffect(() => {
-    const target = nextEpisode ? { ...meta, ...nextEpisode, id: nextEpisode.id, type: "series", name: nextEpisode.title || meta.name } : { ...meta, type };
-    if (target.id) ensureStreams(target).catch(() => {});
+    const target = nextEpisode ? { ...nextEpisode, type: "series" } : { ...meta, type };
+    if (target.id) preloadStreams(target);
   }, [meta.id, nextEpisode?.id]);
 
-  async function playTarget(target) {
-    const playable = { ...meta, ...target, id: target.id, type: target.type || type, name: target.title || target.name || meta.name, season: target.season, episode: target.episode ?? target.number };
-    const streams = await ensureStreams(playable);
-    onPlay(playable, streams, loadingIds[playable.id]);
+  function playTarget(target) {
+    const playable = playableFrom(meta, target, target.type || type);
+    onPlay(playable, []);
   }
 
   const bg = meta.background || meta.backdrop || meta.poster;
@@ -211,43 +213,60 @@ function Player({ item, initialStreams, profile, onClose, onLimitUpdate }) {
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [loading, setLoading] = useState(!initialStreams?.length);
+  const [loading, setLoading] = useState(true);
   const stream = streams[streamIndex];
 
   function showControls() { setVisible(true); clearTimeout(hideRef.current); hideRef.current = setTimeout(() => setVisible(false), 5000); }
   useEffect(() => { showControls(); return () => clearTimeout(hideRef.current); }, []);
+
   useEffect(() => {
     let active = true;
-    if (!streams.length) { setLoading(true); api(`/streams/${item.type || "movie"}/${encodeURIComponent(item.id)}`).then((data) => active && setStreams(data.streams || [])).finally(() => active && setLoading(false)); }
-    api(`/subtitles/${item.type || "movie"}/${encodeURIComponent(item.id)}`).then((data) => active && setSubtitles(data.subtitles || [])).catch(() => {});
+    setStreams(initialStreams || []);
+    setStreamIndex(0);
+    setSubtitles([]);
+    setSubtitleIndex(-1);
+    setLoading(true);
+
+    api(`/streams/${item.type || "movie"}/${encodeURIComponent(item.id)}`)
+      .then((data) => { if (active) setStreams(data.streams || []); })
+      .catch((err) => { if (active) setNotice(`Nie znaleziono źródeł: ${err.message}`); })
+      .finally(() => { if (active) setLoading(false); });
+
+    api(`/subtitles/${item.type || "movie"}/${encodeURIComponent(item.id)}`)
+      .then((data) => active && setSubtitles(data.subtitles || []))
+      .catch(() => {});
+
     api("/playback/start", { method: "POST", body: JSON.stringify({ content_type: item.type || "movie", content_id: item.id, title: item.name, season: item.season, episode: item.episode }) }).then((data) => {
       if (profile?.role === "guest" && data.remaining !== null) { setNotice(`Pozostało ci ${data.remaining} z ${profile.limit} limitu odtworzonych filmów`); onLimitUpdate?.(data.remaining); setTimeout(() => setNotice(""), 4500); }
     }).catch((err) => setNotice(err.message));
     return () => { active = false; };
-  }, [item.id]);
+  }, [item.id, item.type]);
+
   useEffect(() => {
     const tracks = videoRef.current?.textTracks;
     if (!tracks) return;
     for (let i = 0; i < tracks.length; i += 1) tracks[i].mode = i === subtitleIndex ? "showing" : "disabled";
   }, [subtitleIndex, subtitles.length]);
+
   useEffect(() => {
     const id = setInterval(() => {
       const v = videoRef.current;
       if (v && v.duration) api("/playback/progress", { method: "POST", body: JSON.stringify({ content_type: item.type || "movie", content_id: item.id, title: item.name, season: item.season, episode: item.episode, position_seconds: Math.floor(v.currentTime), duration_seconds: Math.floor(v.duration) }) }).catch(() => {});
     }, 15000);
     return () => clearInterval(id);
-  }, [item.id]);
-  function toggle() { const v = videoRef.current; if (!v) return; v.paused ? v.play() : v.pause(); }
+  }, [item.id, item.type]);
+
+  function toggle() { const v = videoRef.current; if (!v || !stream?.url) return; v.paused ? v.play() : v.pause(); }
   function seek(e) { const v = videoRef.current; if (!v || !duration) return; v.currentTime = Number(e.target.value); setTime(v.currentTime); }
   function fullscreen() { const shell = videoRef.current?.parentElement; shell?.requestFullscreen?.(); }
 
   return <main className="player-page"><button className="link back" onClick={onClose}>← Zamknij odtwarzacz</button><h1>{item.name}</h1>{notice && <div className="toast">{notice}</div>}
     <div className={`player-shell ${visible ? "controls-visible" : "controls-hidden"}`} onMouseMove={showControls} onClick={showControls} onTouchStart={showControls}>
-      <video ref={videoRef} src={stream?.url} controls={false} poster={item.background || item.poster} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onWaiting={() => setLoading(true)} onCanPlay={() => setLoading(false)} onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)} onTimeUpdate={(e) => setTime(e.currentTarget.currentTime || 0)}>
+      <video key={`${item.type}-${item.id}-${stream?.url || "empty"}`} ref={videoRef} src={stream?.url || undefined} controls={false} poster={item.background || item.poster} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onWaiting={() => setLoading(true)} onCanPlay={() => setLoading(false)} onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)} onTimeUpdate={(e) => setTime(e.currentTarget.currentTime || 0)}>
         {subtitles.map((sub, i) => <track key={`${sub.url || sub.file}-${i}`} kind="subtitles" src={sub.url || sub.file} srcLang={sub.lang || sub.language || "pl"} label={sub.name || sub.lang || sub.language || `Napisy ${i + 1}`} />)}
       </video>
-      {(loading || !streams.length) && <div className="loading-overlay"><Loader2 className="spin" /><span>{streams.length ? "Ładowanie..." : "Szukam źródeł..."}</span></div>}
-      <div className="player-controls glass"><div className="timeline-row"><span>{fmt(time)}</span><input className="timeline" type="range" min="0" max={duration || 0} step="1" value={time} onChange={seek} /><span>{fmt(duration)}</span></div><div className="controls-row"><button onClick={toggle}>{playing ? <Pause /> : <Play />}</button><button title="Poprzedni odcinek"><SkipForward className="flip" /></button><button title="Następny odcinek"><SkipForward /></button><label className="compact-select"><Cog size={18} /><select value={streamIndex} onChange={(e) => setStreamIndex(Number(e.target.value))}>{streams.map((s, i) => <option key={i} value={i}>{s.name || s.title || s.addon || `Stream ${i + 1}`}</option>)}</select></label><label className="compact-select"><Subtitles size={18} /><select value={subtitleIndex} onChange={(e) => setSubtitleIndex(Number(e.target.value))}><option value="-1">Napisy wył.</option>{subtitles.map((s, i) => <option key={i} value={i}>{s.name || s.lang || s.language || `Napisy ${i + 1}`}</option>)}</select></label><label className="speed"><Gauge size={16} /><select onChange={(e) => { videoRef.current.playbackRate = Number(e.target.value); }}><option value="1">1x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="2">2x</option></select></label><button title="Pomiń intro" className="intro">Pomiń intro</button><button onClick={fullscreen}><Maximize /></button></div></div>
+      {(loading || !stream?.url) && <div className="loading-overlay"><Loader2 className="spin" /><span>{loading ? "Szukam źródeł..." : "Brak źródeł dla tego tytułu"}</span></div>}
+      <div className="player-controls glass"><div className="timeline-row"><span>{fmt(time)}</span><input className="timeline" type="range" min="0" max={duration || 0} step="1" value={time} onChange={seek} /><span>{fmt(duration)}</span></div><div className="controls-row"><button onClick={toggle}>{playing ? <Pause /> : <Play />}</button><button title="Poprzedni odcinek"><SkipForward className="flip" /></button><button title="Następny odcinek"><SkipForward /></button><label className="compact-select"><Cog size={18} /><select value={streamIndex} onChange={(e) => setStreamIndex(Number(e.target.value))}>{streams.map((s, i) => <option key={i} value={i}>{s.name || s.title || s.addon || `Stream ${i + 1}`}</option>)}</select></label><label className="compact-select"><Subtitles size={18} /><select value={subtitleIndex} onChange={(e) => setSubtitleIndex(Number(e.target.value))}><option value="-1">Napisy wył.</option>{subtitles.map((s, i) => <option key={i} value={i}>{s.name || s.lang || s.language || `Napisy ${i + 1}`}</option>)}</select></label><label className="speed"><Gauge size={16} /><select onChange={(e) => { if (videoRef.current) videoRef.current.playbackRate = Number(e.target.value); }}><option value="1">1x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="2">2x</option></select></label><button title="Pomiń intro" className="intro">Pomiń intro</button><button onClick={fullscreen}><Maximize /></button></div></div>
     </div>
   </main>;
 }
@@ -285,7 +304,7 @@ function App() {
   const featuredItems = (featuredLibrary?.items || []).map((i) => ({ ...i, type: featuredLibrary?.catalog?.type || itemType(i) }));
   if (screen === "admin") return <AdminPanel libraries={libraries} settings={settings} onSettingsSaved={refresh} onClose={() => { setScreen("home"); refresh(); }} />;
   if (screen === "results") return <><TopBar profile={profile} onLogout={logout} onSearch={doSearch} onSearchPreview={doSearchPreview} searchPreview={searchPreview} onOpenItem={openItem} onAdmin={() => setScreen("admin")} /><ResultsPage query={searchQuery} results={searchResults} onBack={() => setScreen("home")} onOpen={openItem} /></>;
-  if (screen === "details" && selected) return <Details item={selected} history={history} onBack={() => setScreen("home")} onPlay={(item, streams) => { setPlayerData({ item, streams }); setScreen("player"); }} />;
+  if (screen === "details" && selected) return <Details item={selected} history={history} onBack={() => setScreen("home")} onPlay={(item, streams = []) => { setPlayerData({ item, streams }); setScreen("player"); }} />;
   if (screen === "player" && playerData) return <Player item={playerData.item} initialStreams={playerData.streams} profile={profile} onClose={() => { setScreen("details"); refresh(); }} onLimitUpdate={(remaining) => { const next = { ...profile, remaining }; setProfile(next); localStorage.setItem("player_profile", JSON.stringify(next)); }} />;
   return <><TopBar profile={profile} onLogout={logout} onSearch={doSearch} onSearchPreview={doSearchPreview} searchPreview={searchPreview} onOpenItem={openItem} onAdmin={() => setScreen("admin")} /><Hero items={featuredItems} hasLibraries={libraries.length > 0} onOpen={openItem} /><main className="home">{libraries.map((library, index) => <Row key={library.key || index} library={library} onOpen={openItem} />)}</main></>;
 }
