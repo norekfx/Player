@@ -200,5 +200,40 @@
         refreshCaches().then(() => { replaceAutoplayMessage(); enhanceGuestList(); enhanceCreateGuestPopup(); enhanceGuestDetail(); });
       })();
     </script>
+    <script>
+      (() => {
+        const MESSAGE = 'Kliknij play, jeśli przeglądarka zablokowała autoodtwarzanie albo zmien jakosc jesli jest taka mozliwosc.';
+        const OLD_MESSAGE = 'Kliknij play, jeśli przeglądarka zablokowała autoodtwarzanie.';
+        const STORE_KEY = 'player_autoplay_notice_seen_v1';
+        function getSeen() { try { return JSON.parse(localStorage.getItem(STORE_KEY) || '{}'); } catch { return {}; } }
+        function setSeen(key) { const seen = getSeen(); seen[key] = Date.now(); localStorage.setItem(STORE_KEY, JSON.stringify(seen)); }
+        function currentKey() {
+          const title = document.querySelector('.player-page h1')?.textContent?.trim() || 'unknown';
+          const video = document.querySelector('.player-page video');
+          const src = video?.currentSrc || video?.src || '';
+          return `${title}|${src}`;
+        }
+        function handleNotice() {
+          document.querySelectorAll('.toast').forEach((toast) => {
+            const value = toast.textContent || '';
+            if (!value.includes(MESSAGE) && !value.includes(OLD_MESSAGE)) return;
+            if (value.includes(OLD_MESSAGE)) toast.textContent = value.replaceAll(OLD_MESSAGE, MESSAGE);
+            const key = currentKey();
+            const seen = getSeen();
+            if (seen[key]) {
+              toast.remove();
+              return;
+            }
+            setSeen(key);
+            setTimeout(() => {
+              if (toast.isConnected && (toast.textContent || '').includes(MESSAGE)) toast.remove();
+            }, 5000);
+          });
+        }
+        const observer = new MutationObserver(handleNotice);
+        observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+        handleNotice();
+      })();
+    </script>
   </body>
 </html>
