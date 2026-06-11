@@ -22,6 +22,20 @@ class GuestProfile(SQLModel, table=True):
     expires_at: Optional[datetime] = None
 
 
+class GuestAccessCode(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    guest_id: int = Field(index=True, unique=True)
+    code: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class GuestHiddenLibrary(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    guest_id: int = Field(index=True)
+    catalog_key: str = Field(index=True)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class GuestAllowedContent(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     guest_id: int = Field(index=True)
