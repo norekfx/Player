@@ -22,6 +22,16 @@ class GuestProfile(SQLModel, table=True):
     expires_at: Optional[datetime] = None
 
 
+class GuestAllowedContent(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    guest_id: int = Field(index=True)
+    content_type: str = Field(index=True)
+    content_id: str = Field(index=True)
+    title: str = ""
+    poster: str = ""
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class Addon(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     url: str = Field(index=True, unique=True)
