@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { Play, Pause, Search, Settings, User, LogOut, Plus, KeyRound, Clapperboard, Maximize, Gauge, SkipForward, Cog, Loader2 } from "lucide-react";
+import { Play, Pause, Search, Settings, User, LogOut, Plus, KeyRound, Clapperboard, Maximize, Gauge, SkipForward, Cog, Loader2, Subtitles } from "lucide-react";
 import { api, clearSession, getProfile, setSession } from "./api";
 import "./styles.css";
 
@@ -13,7 +13,9 @@ function fmt(seconds = 0) {
 }
 
 function itemType(item) {
-  return item.type || item.contentType || item.kind || (item.videos?.length ? "series" : "movie");
+  const type = item.type || item.contentType || item.kind || item.catalogType;
+  if (["series", "show", "tv"].includes(type)) return "series";
+  return type || (item.videos?.length ? "series" : "movie");
 }
 
 function episodeLabel(ep) {
@@ -64,13 +66,41 @@ function AuthScreen({ onLogin }) {
   </section></main>;
 }
 
-function TopBar({ profile, onLogout, onSearch, onAdmin }) {
+function TopBar({ profile, onLogout, onSearch, onSearchPreview, searchPreview, onOpenItem, onAdmin }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
-  function submit(e) { e.preventDefault(); if (q.trim()) onSearch(q.trim()); }
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    const query = q.trim();
+    if (query.length < 2) return;
+    const id = setTimeout(() => onSearchPreview(query), 1000);
+    return () => clearTimeout(id);
+  }, [q]);
+
+  function submit(e) {
+    e.preventDefault();
+    if (q.trim()) {
+      setFocused(false);
+      onSearch(q.trim());
+    }
+  }
+
+  const previewItems = (searchPreview?.results || []).slice(0, 8);
   return <header className="topbar">
     <div className="brand"><Clapperboard /> <span>Player</span></div>
-    <form className="search" onSubmit={submit}><Search size={18} /><input placeholder="Szukaj filmu lub serialu..." value={q} onChange={(e) => setQ(e.target.value)} /></form>
+    <div className="search-wrap">
+      <form className="search" onSubmit={submit}><Search size={18} /><input placeholder="Szukaj filmu lub serialu..." value={q} onFocus={() => setFocused(true)} onChange={(e) => setQ(e.target.value)} /></form>
+      {focused && q.trim().length >= 2 && <div className="search-preview glass">
+        {searchPreview?.loading && <div className="preview-loading"><Loader2 className="spin" /> Szukam...</div>}
+        {!searchPreview?.loading && previewItems.length === 0 && <div className="preview-empty">Brak wyników</div>}
+        {previewItems.map((item) => <button key={`${item.type}-${item.id}`} onMouseDown={(e) => e.preventDefault()} onClick={() => { setFocused(false); onOpenItem(item); }}>
+          {item.poster ? <img src={item.poster} alt="" /> : <div className="mini-poster" />}
+          <span><strong>{item.name}</strong><small>{item.type === "series" ? "Serial" : "Film"}</small></span>
+        </button>)}
+        {previewItems.length > 0 && <button className="all-results" onMouseDown={(e) => e.preventDefault()} onClick={() => { setFocused(false); onSearch(q.trim()); }}>Pokaż wszystkie wyniki</button>}
+      </div>}
+    </div>
     {profile?.role === "guest" && <div className="limit">Limit: {profile.remaining ?? "?"}/{profile.limit ?? "?"}</div>}
     <div className="menu-wrap"><button className="icon" onClick={() => setOpen(!open)}><Settings /></button>
       {open && <div className="menu glass"><div><User size={16} /> {profile?.username || profile?.display_name || "Konto"}</div>{profile?.role === "admin" && <button onClick={onAdmin}><KeyRound size={16} /> Panel admina</button>}<button onClick={onLogout}><LogOut size={16} /> Wyloguj</button></div>}
@@ -96,7 +126,18 @@ function Hero({ items, hasLibraries, onOpen }) {
 }
 
 function Row({ library, onOpen }) {
-  return <section className="row"><h2>{library.catalog?.name || library.catalog?.id} <span>{library.addon}</span></h2>{library.error && <div className="error small">{library.error}</div>}<div className="cards">{(library.items || []).map((item) => <button className="poster" key={`${library.addon}-${item.id}`} onClick={() => onOpen({ ...item, type: library.catalog?.type || itemType(item) })}>{item.poster ? <img src={item.poster} alt="" /> : <div className="poster-fallback">{item.name}</div>}<strong>{item.name}</strong></button>)}</div></section>;
+  return <section className="row"><h2>{library.catalog?.name || library.catalog?.id}</h2>{library.error && <div className="error small">{library.error}</div>}<div className="cards">{(library.items || []).map((item) => <button className="poster" key={`${library.key || library.catalog?.id}-${item.id}`} onClick={() => onOpen({ ...item, type: library.catalog?.type || itemType(item) })}>{item.poster ? <img src={item.poster} alt="" /> : <div className="poster-fallback">{item.name}</div>}<strong>{item.name}</strong></button>)}</div></section>;
+}
+
+function ResultsPage({ query, results, onBack, onOpen }) {
+  const movies = results?.movies || [];
+  const series = results?.series || [];
+  return <main className="results-page">
+    <button className="link back" onClick={onBack}>← Wróć</button>
+    <h1>Wyniki dla „{query}”</h1>
+    <section className="result-section"><h2>Filmy</h2>{movies.length ? <div className="result-grid">{movies.map((item) => <button className="poster" key={`movie-${item.id}`} onClick={() => onOpen({ ...item, type: "movie" })}>{item.poster ? <img src={item.poster} alt="" /> : <div className="poster-fallback">{item.name}</div>}<strong>{item.name}</strong></button>)}</div> : <p>Brak filmów.</p>}</section>
+    <section className="result-section"><h2>Seriale</h2>{series.length ? <div className="result-grid">{series.map((item) => <button className="poster" key={`series-${item.id}`} onClick={() => onOpen({ ...item, type: "series" })}>{item.poster ? <img src={item.poster} alt="" /> : <div className="poster-fallback">{item.name}</div>}<strong>{item.name}</strong></button>)}</div> : <p>Brak seriali.</p>}</section>
+  </main>;
 }
 
 function Details({ item, history, onBack, onPlay }) {
@@ -163,6 +204,8 @@ function Player({ item, initialStreams, profile, onClose, onLimitUpdate }) {
   const hideRef = useRef(null);
   const [streams, setStreams] = useState(initialStreams || []);
   const [streamIndex, setStreamIndex] = useState(0);
+  const [subtitles, setSubtitles] = useState([]);
+  const [subtitleIndex, setSubtitleIndex] = useState(-1);
   const [notice, setNotice] = useState("");
   const [visible, setVisible] = useState(true);
   const [playing, setPlaying] = useState(false);
@@ -176,11 +219,17 @@ function Player({ item, initialStreams, profile, onClose, onLimitUpdate }) {
   useEffect(() => {
     let active = true;
     if (!streams.length) { setLoading(true); api(`/streams/${item.type || "movie"}/${encodeURIComponent(item.id)}`).then((data) => active && setStreams(data.streams || [])).finally(() => active && setLoading(false)); }
+    api(`/subtitles/${item.type || "movie"}/${encodeURIComponent(item.id)}`).then((data) => active && setSubtitles(data.subtitles || [])).catch(() => {});
     api("/playback/start", { method: "POST", body: JSON.stringify({ content_type: item.type || "movie", content_id: item.id, title: item.name, season: item.season, episode: item.episode }) }).then((data) => {
       if (profile?.role === "guest" && data.remaining !== null) { setNotice(`Pozostało ci ${data.remaining} z ${profile.limit} limitu odtworzonych filmów`); onLimitUpdate?.(data.remaining); setTimeout(() => setNotice(""), 4500); }
     }).catch((err) => setNotice(err.message));
     return () => { active = false; };
   }, [item.id]);
+  useEffect(() => {
+    const tracks = videoRef.current?.textTracks;
+    if (!tracks) return;
+    for (let i = 0; i < tracks.length; i += 1) tracks[i].mode = i === subtitleIndex ? "showing" : "disabled";
+  }, [subtitleIndex, subtitles.length]);
   useEffect(() => {
     const id = setInterval(() => {
       const v = videoRef.current;
@@ -194,9 +243,11 @@ function Player({ item, initialStreams, profile, onClose, onLimitUpdate }) {
 
   return <main className="player-page"><button className="link back" onClick={onClose}>← Zamknij odtwarzacz</button><h1>{item.name}</h1>{notice && <div className="toast">{notice}</div>}
     <div className={`player-shell ${visible ? "controls-visible" : "controls-hidden"}`} onMouseMove={showControls} onClick={showControls} onTouchStart={showControls}>
-      <video ref={videoRef} src={stream?.url} controls={false} poster={item.background || item.poster} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onWaiting={() => setLoading(true)} onCanPlay={() => setLoading(false)} onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)} onTimeUpdate={(e) => setTime(e.currentTarget.currentTime || 0)} />
+      <video ref={videoRef} src={stream?.url} controls={false} poster={item.background || item.poster} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onWaiting={() => setLoading(true)} onCanPlay={() => setLoading(false)} onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)} onTimeUpdate={(e) => setTime(e.currentTarget.currentTime || 0)}>
+        {subtitles.map((sub, i) => <track key={`${sub.url || sub.file}-${i}`} kind="subtitles" src={sub.url || sub.file} srcLang={sub.lang || sub.language || "pl"} label={sub.name || sub.lang || sub.language || `Napisy ${i + 1}`} />)}
+      </video>
       {(loading || !streams.length) && <div className="loading-overlay"><Loader2 className="spin" /><span>{streams.length ? "Ładowanie..." : "Szukam źródeł..."}</span></div>}
-      <div className="player-controls glass"><div className="timeline-row"><span>{fmt(time)}</span><input className="timeline" type="range" min="0" max={duration || 0} step="1" value={time} onChange={seek} /><span>{fmt(duration)}</span></div><div className="controls-row"><button onClick={toggle}>{playing ? <Pause /> : <Play />}</button><button title="Poprzedni odcinek"><SkipForward className="flip" /></button><button title="Następny odcinek"><SkipForward /></button><label className="compact-select"><Cog size={18} /><select value={streamIndex} onChange={(e) => setStreamIndex(Number(e.target.value))}>{streams.map((s, i) => <option key={i} value={i}>{s.name || s.title || s.addon || `Stream ${i + 1}`}</option>)}</select></label><label className="speed"><Gauge size={16} /><select onChange={(e) => { videoRef.current.playbackRate = Number(e.target.value); }}><option value="1">1x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="2">2x</option></select></label><button title="Pomiń intro" className="intro">Pomiń intro</button><button onClick={fullscreen}><Maximize /></button></div></div>
+      <div className="player-controls glass"><div className="timeline-row"><span>{fmt(time)}</span><input className="timeline" type="range" min="0" max={duration || 0} step="1" value={time} onChange={seek} /><span>{fmt(duration)}</span></div><div className="controls-row"><button onClick={toggle}>{playing ? <Pause /> : <Play />}</button><button title="Poprzedni odcinek"><SkipForward className="flip" /></button><button title="Następny odcinek"><SkipForward /></button><label className="compact-select"><Cog size={18} /><select value={streamIndex} onChange={(e) => setStreamIndex(Number(e.target.value))}>{streams.map((s, i) => <option key={i} value={i}>{s.name || s.title || s.addon || `Stream ${i + 1}`}</option>)}</select></label><label className="compact-select"><Subtitles size={18} /><select value={subtitleIndex} onChange={(e) => setSubtitleIndex(Number(e.target.value))}><option value="-1">Napisy wył.</option>{subtitles.map((s, i) => <option key={i} value={i}>{s.name || s.lang || s.language || `Napisy ${i + 1}`}</option>)}</select></label><label className="speed"><Gauge size={16} /><select onChange={(e) => { videoRef.current.playbackRate = Number(e.target.value); }}><option value="1">1x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="2">2x</option></select></label><button title="Pomiń intro" className="intro">Pomiń intro</button><button onClick={fullscreen}><Maximize /></button></div></div>
     </div>
   </main>;
 }
@@ -221,18 +272,22 @@ function AdminPanel({ onClose, libraries, settings, onSettingsSaved }) {
 function App() {
   const [profile, setProfile] = useState(getProfile());
   const [libraries, setLibraries] = useState([]), [settings, setSettings] = useState({}), [history, setHistory] = useState([]);
-  const [screen, setScreen] = useState("home"), [selected, setSelected] = useState(null), [playerData, setPlayerData] = useState(null), [searchResults, setSearchResults] = useState(null);
+  const [screen, setScreen] = useState("home"), [selected, setSelected] = useState(null), [playerData, setPlayerData] = useState(null);
+  const [searchQuery, setSearchQuery] = useState(""), [searchResults, setSearchResults] = useState(null), [searchPreview, setSearchPreview] = useState({ results: [], loading: false });
   async function refresh() { const me = await api("/me"); setProfile({ ...getProfile(), ...me }); const data = await api("/catalogs"); setLibraries(data.libraries || []); setSettings(data.settings || {}); setHistory((await api("/playback/history")).history || []); }
   useEffect(() => { if (profile) refresh().catch(() => { clearSession(); setProfile(null); }); }, []);
   if (!profile) return <AuthScreen onLogin={() => { setProfile(getProfile()); refresh(); }} />;
   function logout() { clearSession(); setProfile(null); }
-  async function doSearch(q) { const data = await api("/search", { method: "POST", body: JSON.stringify({ query: q }) }); setSearchResults(data.results || []); setScreen("home"); }
+  function openItem(item) { setSelected({ ...item, type: itemType(item) }); setScreen("details"); }
+  async function doSearchPreview(q) { setSearchPreview((v) => ({ ...v, loading: true })); try { const data = await api("/search", { method: "POST", body: JSON.stringify({ query: q }) }); setSearchPreview({ ...data, loading: false }); } catch { setSearchPreview({ results: [], loading: false }); } }
+  async function doSearch(q) { setSearchQuery(q); const data = await api("/search", { method: "POST", body: JSON.stringify({ query: q }) }); setSearchResults(data); setScreen("results"); }
   const featuredLibrary = useMemo(() => libraries.find((l) => l.key === settings.featured_catalog_key) || libraries.find((l) => String(l.catalog?.name || l.catalog?.id).toLowerCase() === "proponowane") || libraries.find((l) => l.items?.length), [libraries, settings.featured_catalog_key]);
   const featuredItems = (featuredLibrary?.items || []).map((i) => ({ ...i, type: featuredLibrary?.catalog?.type || itemType(i) }));
   if (screen === "admin") return <AdminPanel libraries={libraries} settings={settings} onSettingsSaved={refresh} onClose={() => { setScreen("home"); refresh(); }} />;
+  if (screen === "results") return <><TopBar profile={profile} onLogout={logout} onSearch={doSearch} onSearchPreview={doSearchPreview} searchPreview={searchPreview} onOpenItem={openItem} onAdmin={() => setScreen("admin")} /><ResultsPage query={searchQuery} results={searchResults} onBack={() => setScreen("home")} onOpen={openItem} /></>;
   if (screen === "details" && selected) return <Details item={selected} history={history} onBack={() => setScreen("home")} onPlay={(item, streams) => { setPlayerData({ item, streams }); setScreen("player"); }} />;
   if (screen === "player" && playerData) return <Player item={playerData.item} initialStreams={playerData.streams} profile={profile} onClose={() => { setScreen("details"); refresh(); }} onLimitUpdate={(remaining) => { const next = { ...profile, remaining }; setProfile(next); localStorage.setItem("player_profile", JSON.stringify(next)); }} />;
-  return <><TopBar profile={profile} onLogout={logout} onSearch={doSearch} onAdmin={() => setScreen("admin")} /><Hero items={featuredItems} hasLibraries={libraries.length > 0} onOpen={(item) => { setSelected({ ...item, type: item.type || "movie" }); setScreen("details"); }} /><main className="home">{searchResults && <Row library={{ addon: "Wyniki", catalog: { name: "Wyniki wyszukiwania" }, items: searchResults }} onOpen={(item) => { setSelected(item); setScreen("details"); }} />}{libraries.map((library, index) => <Row key={library.key || index} library={library} onOpen={(item) => { setSelected(item); setScreen("details"); }} />)}</main></>;
+  return <><TopBar profile={profile} onLogout={logout} onSearch={doSearch} onSearchPreview={doSearchPreview} searchPreview={searchPreview} onOpenItem={openItem} onAdmin={() => setScreen("admin")} /><Hero items={featuredItems} hasLibraries={libraries.length > 0} onOpen={openItem} /><main className="home">{libraries.map((library, index) => <Row key={library.key || index} library={library} onOpen={openItem} />)}</main></>;
 }
 
 createRoot(document.getElementById("root")).render(<App />);
