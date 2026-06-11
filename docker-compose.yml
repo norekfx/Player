@@ -1,0 +1,25 @@
+services:
+  api:
+    build:
+      context: ./server
+    container_name: player-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - player_data:/data
+    ports:
+      - "8090:8090"
+
+  web:
+    build:
+      context: ./web
+    container_name: player-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+
+volumes:
+  player_data:
