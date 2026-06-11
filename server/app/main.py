@@ -3,8 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 import json
 import random
+import re
 
-from fastapi import Depends, FastAPI, HTTPException, status
+import httpx
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
@@ -113,6 +115,14 @@ def public_addon(addon: Addon) -> dict:
         "enabled": addon.enabled,
         "manifest": manifest,
     }
+
+
+def srt_to_vtt(text: str) -> str:
+    body = text.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
+    if body.lstrip().upper().startswith("WEBVTT"):
+        return body
+    body = re.sub(r"(\d{2}:\d{2}:\d{2}),(\d{3})", r"\1.\2", body)
+    return "WEBVTT\n\n" + body.lstrip()
 
 
 @app.get("/api/health")
@@ -339,10 +349,29 @@ async def subtitles(content_type: str, content_id: str, actor: dict = Depends(re
         try:
             data = await fetch_subtitles(addon.url, content_type, content_id)
             for subtitle in data.get("subtitles", []):
-                subtitle_list.append({**subtitle, "addon": addon.name})
+                original_url = subtitle.get("url") or subtitle.get("file")
+                proxied = {**subtitle, "addon": addon.name}
+                if original_url:
+                    proxied["original_url"] = original_url
+                    proxied["url"] = f"/api/subtitle-proxy?url={original_url}"
+                subtitle_list.append(proxied)
         except Exception:
             continue
     return {"subtitles": subtitle_list}
+
+
+@app.get("/api/subtitle-proxy")
+async def subtitle_proxy(url: str = Query(...), actor: dict = Depends(require_actor)) -> Response:
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Invalid subtitle URL")
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            text = response.text
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Subtitle download failed: {exc}") from exc
+    return Response(content=srt_to_vtt(text), media_type="text/vtt; charset=utf-8")
 
 
 @app.post("/api/playback/start")
