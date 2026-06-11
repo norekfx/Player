@@ -1,6 +1,7 @@
 const API_BASE = "/api";
 const UI_KEY = "player_ui_state_v1";
 const LIMIT_VIEW_KEY = "player_limit_exhausted_view_v1";
+const HLS_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/hls.js@1.5.20/dist/hls.min.js";
 
 export function getToken() {
   return localStorage.getItem("player_token");
@@ -70,12 +71,75 @@ function markLimitExhaustedView() {
   showLimitExhaustedPlayerView();
 }
 
+function showPlayerToast(message) {
+  if (typeof document === "undefined") return;
+  let toast = document.querySelector(".player-page .toast") || document.querySelector(".toast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.className = "toast";
+    (document.querySelector(".player-page") || document.body).appendChild(toast);
+  }
+  toast.textContent = message;
+}
+
+function isHlsUrl(url) {
+  return /\.m3u8(\?|#|$)/i.test(String(url || ""));
+}
+
+let hlsScriptPromise = null;
+function loadHlsScript() {
+  if (typeof window === "undefined") return Promise.reject(new Error("No window"));
+  if (window.Hls) return Promise.resolve(window.Hls);
+  if (hlsScriptPromise) return hlsScriptPromise;
+  hlsScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = HLS_SCRIPT_URL;
+    script.async = true;
+    script.onload = () => window.Hls ? resolve(window.Hls) : reject(new Error("HLS loader unavailable"));
+    script.onerror = () => reject(new Error("HLS loader failed"));
+    document.head.appendChild(script);
+  });
+  return hlsScriptPromise;
+}
+
+async function attachHlsIfNeeded(video) {
+  if (!video) return;
+  const src = video.currentSrc || video.src || video.getAttribute("src") || "";
+  if (!isHlsUrl(src)) return;
+  if (video.canPlayType("application/vnd.apple.mpegurl")) return;
+  if (video.__playerHlsSrc === src && video.__playerHlsAttached) return;
+
+  try {
+    const Hls = await loadHlsScript();
+    if (!Hls.isSupported()) return;
+    if (video.__playerHls) video.__playerHls.destroy();
+    const hls = new Hls({ enableWorker: true, lowLatencyMode: false, backBufferLength: 60 });
+    video.__playerHls = hls;
+    video.__playerHlsSrc = src;
+    video.__playerHlsAttached = true;
+    hls.loadSource(src);
+    hls.attachMedia(video);
+    hls.on(Hls.Events.ERROR, (_, data) => {
+      if (data?.fatal) {
+        showPlayerToast("Nie udało się odtworzyć strumienia HLS. Źródło może blokować odtwarzanie w przeglądarce albo wymagać zewnętrznego odtwarzacza.");
+      }
+    });
+  } catch {
+    showPlayerToast("Ten strumień jest w formacie HLS (.m3u8), a przeglądarka nie uruchomiła obsługi HLS.");
+  }
+}
+
+function scanHlsVideos() {
+  if (typeof document === "undefined") return;
+  document.querySelectorAll("video").forEach((video) => attachHlsIfNeeded(video));
+}
+
 if (typeof window !== "undefined") {
   const shouldShowLimitView = () => sessionStorage.getItem(LIMIT_VIEW_KEY) === "1" || profileLimitExhausted();
   const enforceLimitView = () => { if (shouldShowLimitView()) showLimitExhaustedPlayerView(); };
-  const observer = new MutationObserver(enforceLimitView);
-  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-  setInterval(enforceLimitView, 500);
+  const observer = new MutationObserver(() => { enforceLimitView(); scanHlsVideos(); });
+  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["src"] });
+  setInterval(() => { enforceLimitView(); scanHlsVideos(); }, 500);
 }
 
 async function assertGuestCanRequestStreams(token) {
