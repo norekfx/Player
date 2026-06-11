@@ -92,6 +92,10 @@ def public_addon(addon: Addon) -> dict:
         "manifest": json.loads(addon.manifest_json),
     }
 
+def is_found_catalog(catalog: dict) -> bool:
+    name = str(catalog.get("name") or catalog.get("id") or "").strip().lower()
+    return name in {"znaleziono", "found"}
+
 def srt_to_vtt(text: str) -> str:
     body = text.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
     if body.lstrip().upper().startswith("WEBVTT"):
@@ -232,6 +236,8 @@ async def catalogs(actor: dict = Depends(require_actor), session: Session = Depe
     for addon in addons:
         manifest = json.loads(addon.manifest_json)
         for catalog in manifest.get("catalogs", []):
+            if is_found_catalog(catalog):
+                continue
             catalog_type = catalog.get("type", "movie")
             catalog_id = catalog.get("id")
             key = f"{addon.id}|{catalog_type}|{catalog_id}"
@@ -275,7 +281,8 @@ async def search(payload: SearchRequest, actor: dict = Depends(require_actor), s
                 results.append({**item, "type": catalog_type})
     movies = [r for r in results if r.get("type") == "movie"]
     series = [r for r in results if r.get("type") in ("series", "show", "tv")]
-    return {"results": results, "movies": movies, "series": series}
+    preview = movies[:3] + series[:3]
+    return {"results": preview, "movies": movies, "series": series}
 
 @app.get("/api/meta/{content_type}/{content_id}")
 async def meta(content_type: str, content_id: str, actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
