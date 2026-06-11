@@ -58,7 +58,6 @@
           });
         }
         function text(el) { return (el?.textContent || '').trim(); }
-        function guestName(g) { return g.display_name || 'Bez nazwy'; }
         function findGuestByName(name) {
           const trimmed = (name || '').trim();
           return guestsCache.find(g => (g.display_name || 'Bez nazwy') === trimmed) || guestsCache.find(g => String(g.id) === trimmed);
@@ -141,15 +140,6 @@
             while (p.firstChild) info.appendChild(p.firstChild);
             wrap.appendChild(img); wrap.appendChild(info); p.appendChild(wrap);
           });
-          const searchItems = [...panel.querySelectorAll('p')].filter(p => p.querySelector('button') && !p.querySelector('span'));
-          const results = [...((window.__lastSearchMovies || [])), ...((window.__lastSearchSeries || []))];
-          searchItems.forEach((p) => {
-            const title = text(p.querySelector('strong'));
-            const item = results.find(x => x.name === title);
-            if (!item?.poster || p.querySelector('img')) return;
-            const img = document.createElement('img'); img.src = item.poster; img.alt = ''; img.style.cssText = 'width:58px;height:86px;object-fit:cover;border-radius:8px;margin-right:10px;vertical-align:middle;';
-            p.insertBefore(img, p.firstChild);
-          });
         }
         async function addHiddenLibrariesPanel(main, guestId, hiddenKeys) {
           if (main.querySelector('.guest-helper-panel')) return;
@@ -190,12 +180,7 @@
           } catch {}
           return res;
         };
-        const observer = new MutationObserver(() => {
-          replaceAutoplayMessage();
-          enhanceGuestList();
-          enhanceCreateGuestPopup();
-          enhanceGuestDetail();
-        });
+        const observer = new MutationObserver(() => { replaceAutoplayMessage(); enhanceGuestList(); enhanceCreateGuestPopup(); enhanceGuestDetail(); });
         observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
         refreshCaches().then(() => { replaceAutoplayMessage(); enhanceGuestList(); enhanceCreateGuestPopup(); enhanceGuestDetail(); });
       })();
@@ -220,19 +205,66 @@
             if (value.includes(OLD_MESSAGE)) toast.textContent = value.replaceAll(OLD_MESSAGE, MESSAGE);
             const key = currentKey();
             const seen = getSeen();
-            if (seen[key]) {
-              toast.remove();
-              return;
-            }
+            if (seen[key]) { toast.remove(); return; }
             setSeen(key);
-            setTimeout(() => {
-              if (toast.isConnected && (toast.textContent || '').includes(MESSAGE)) toast.remove();
-            }, 5000);
+            setTimeout(() => { if (toast.isConnected && (toast.textContent || '').includes(MESSAGE)) toast.remove(); }, 5000);
           });
         }
         const observer = new MutationObserver(handleNotice);
         observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
         handleNotice();
+      })();
+    </script>
+    <script>
+      (() => {
+        const BAD_AUDIO = /(\bAC[- ]?3\b|\bE[- ]?AC[- ]?3\b|\bEAC3\b|\bDTS\b|\bTRUEHD\b|\bAC3\b)/i;
+        const GOOD_AUDIO = /(\bAAC\b|\bMP3\b|\bOPUS\b|\bVORBIS\b|\bMP4A\b)/i;
+        const CHECK_KEY = 'player_audio_stream_checked_v1';
+        function getChecked() { try { return JSON.parse(sessionStorage.getItem(CHECK_KEY) || '{}'); } catch { return {}; } }
+        function setChecked(key) { const data = getChecked(); data[key] = Date.now(); sessionStorage.setItem(CHECK_KEY, JSON.stringify(data)); }
+        function streamSelect() {
+          return [...document.querySelectorAll('.player-page .compact-select select')].find((select) => {
+            const text = [...select.options].map(o => o.textContent || '').join(' ');
+            return select.options.length > 1 && (/Torrentio|BluRay|WEB|Stream|AC[- ]?3|EAC3|AAC|DTS|HEVC|H264/i.test(text));
+          });
+        }
+        function playerKey(select) {
+          const title = document.querySelector('.player-page h1')?.textContent?.trim() || 'unknown';
+          return title + '|' + (select?.value || '') + '|' + ([...(select?.options || [])].find(o => o.selected)?.textContent || '');
+        }
+        function showWarning(message) {
+          let toast = document.querySelector('.toast.audio-codec-toast');
+          if (!toast) { toast = document.createElement('div'); toast.className = 'toast audio-codec-toast'; document.body.appendChild(toast); }
+          toast.textContent = message;
+          setTimeout(() => { if (toast.isConnected && toast.textContent === message) toast.remove(); }, 7000);
+        }
+        function chooseCompatibleStream(reason = 'codec') {
+          const select = streamSelect();
+          if (!select) return;
+          const options = [...select.options];
+          const selected = options.find(o => o.selected) || options[Number(select.value)] || options[0];
+          const selectedText = selected?.textContent || '';
+          const key = playerKey(select) + '|' + reason;
+          if (getChecked()[key]) return;
+          if (!BAD_AUDIO.test(selectedText) && reason !== 'silent-audio') return;
+          setChecked(key);
+          const candidate = options.find(o => GOOD_AUDIO.test(o.textContent || '') && !BAD_AUDIO.test(o.textContent || ''));
+          if (candidate && candidate.value !== select.value) {
+            select.value = candidate.value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            showWarning('Ten stream może mieć nieobsługiwany dźwięk w przeglądarce. Automatycznie zmieniono jakość na źródło z bardziej zgodnym audio.');
+          } else {
+            showWarning('Ten stream może mieć obraz bez dźwięku, bo używa AC-3/EAC3/DTS. Zmień jakość na AAC/MP3/Opus, jeśli jest dostępna.');
+          }
+        }
+        function checkSilentAudio() {
+          const video = document.querySelector('.player-page video');
+          if (!video || !video.currentSrc || video.paused || video.currentTime < 4) return;
+          if ('webkitAudioDecodedByteCount' in video && video.webkitAudioDecodedByteCount === 0) chooseCompatibleStream('silent-audio');
+        }
+        const observer = new MutationObserver(() => chooseCompatibleStream('codec'));
+        observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+        setInterval(() => { chooseCompatibleStream('codec'); checkSilentAudio(); }, 2500);
       })();
     </script>
   </body>
