@@ -12,7 +12,7 @@ from sqlmodel import Session, select
 from .addons import AddonError, fetch_catalog, fetch_manifest, fetch_meta, fetch_streams, fetch_subtitles, normalize_addon_url
 from .config import get_settings
 from .db import create_db_and_tables, get_session
-from .models import Addon, GuestProfile, PlaybackHistory, SearchLog, User
+from .models import Addon, AppSetting, GuestProfile, PlaybackHistory, SearchLog, User
 from .security import create_token, hash_secret, require_actor, require_admin, verify_secret
 
 settings = get_settings()
@@ -58,12 +58,26 @@ class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=200)
 
 
+class AppSettingsRequest(BaseModel):
+    featured_catalog_key: str = ""
+
+
 class PlaybackStartRequest(BaseModel):
     content_type: str
     content_id: str
     title: str = ""
     season: int | None = None
     episode: int | None = None
+
+
+class PlaybackProgressRequest(BaseModel):
+    content_type: str
+    content_id: str
+    title: str = ""
+    season: int | None = None
+    episode: int | None = None
+    position_seconds: int = Field(default=0, ge=0)
+    duration_seconds: int = Field(default=0, ge=0)
 
 
 @app.on_event("startup")
@@ -73,6 +87,19 @@ def on_startup() -> None:
 
 def admin_exists(session: Session) -> bool:
     return session.exec(select(User).where(User.role == "admin")).first() is not None
+
+
+def get_setting(session: Session, key: str, default: str = "") -> str:
+    setting = session.get(AppSetting, key)
+    return setting.value if setting else default
+
+
+def set_setting(session: Session, key: str, value: str) -> None:
+    setting = session.get(AppSetting, key) or AppSetting(key=key, value=value)
+    setting.value = value
+    setting.updated_at = datetime.utcnow()
+    session.add(setting)
+    session.commit()
 
 
 def public_addon(addon: Addon) -> dict:
@@ -130,6 +157,17 @@ def guest_login(payload: GuestLoginRequest, session: Session = Depends(get_sessi
 @app.get("/api/me")
 def me(actor: dict = Depends(require_actor)) -> dict:
     return actor
+
+
+@app.get("/api/settings")
+def app_settings(actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
+    return {"featured_catalog_key": get_setting(session, "featured_catalog_key", "")}
+
+
+@app.put("/api/admin/settings")
+def update_settings(payload: AppSettingsRequest, _: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
+    set_setting(session, "featured_catalog_key", payload.featured_catalog_key)
+    return {"ok": True, "featured_catalog_key": payload.featured_catalog_key}
 
 
 @app.post("/api/admin/guests")
@@ -218,12 +256,15 @@ async def catalogs(actor: dict = Depends(require_actor), session: Session = Depe
     for addon in addons:
         manifest = json.loads(addon.manifest_json)
         for catalog in manifest.get("catalogs", []):
+            catalog_type = catalog.get("type", "movie")
+            catalog_id = catalog.get("id")
+            key = f"{addon.id}|{catalog_type}|{catalog_id}"
             try:
-                data = await fetch_catalog(addon.url, catalog.get("type", "movie"), catalog.get("id"))
-                libraries.append({"addon": addon.name, "catalog": catalog, "items": data.get("metas", [])})
+                data = await fetch_catalog(addon.url, catalog_type, catalog_id)
+                libraries.append({"key": key, "addon": addon.name, "addon_id": addon.id, "catalog": catalog, "items": data.get("metas", [])})
             except Exception as exc:
-                libraries.append({"addon": addon.name, "catalog": catalog, "items": [], "error": str(exc)})
-    return {"libraries": libraries}
+                libraries.append({"key": key, "addon": addon.name, "addon_id": addon.id, "catalog": catalog, "items": [], "error": str(exc)})
+    return {"libraries": libraries, "settings": {"featured_catalog_key": get_setting(session, "featured_catalog_key", "")}}
 
 
 @app.post("/api/search")
@@ -306,6 +347,40 @@ def playback_start(payload: PlaybackStartRequest, actor: dict = Depends(require_
         guest = session.get(GuestProfile, actor["id"])
         remaining = max(0, guest.play_limit - guest.plays_used)
     return {"ok": True, "remaining": remaining}
+
+
+@app.post("/api/playback/progress")
+def playback_progress(payload: PlaybackProgressRequest, actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
+    existing = session.exec(
+        select(PlaybackHistory)
+        .where(PlaybackHistory.actor_type == actor["role"])
+        .where(PlaybackHistory.actor_id == actor["id"])
+        .where(PlaybackHistory.content_id == payload.content_id)
+        .order_by(PlaybackHistory.updated_at.desc())
+    ).first()
+    history = existing or PlaybackHistory(actor_type=actor["role"], actor_id=actor["id"], content_type=payload.content_type, content_id=payload.content_id)
+    history.title = payload.title
+    history.content_type = payload.content_type
+    history.season = payload.season
+    history.episode = payload.episode
+    history.position_seconds = payload.position_seconds
+    history.duration_seconds = payload.duration_seconds
+    history.updated_at = datetime.utcnow()
+    session.add(history)
+    session.commit()
+    return {"ok": True}
+
+
+@app.get("/api/playback/history")
+def playback_history(actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
+    rows = session.exec(
+        select(PlaybackHistory)
+        .where(PlaybackHistory.actor_type == actor["role"])
+        .where(PlaybackHistory.actor_id == actor["id"])
+        .order_by(PlaybackHistory.updated_at.desc())
+        .limit(200)
+    ).all()
+    return {"history": [{"content_type": h.content_type, "content_id": h.content_id, "title": h.title, "season": h.season, "episode": h.episode, "position_seconds": h.position_seconds, "duration_seconds": h.duration_seconds, "updated_at": h.updated_at.isoformat()} for h in rows]}
 
 
 @app.get("/api/admin/logs/searches")
