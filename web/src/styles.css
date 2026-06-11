@@ -31,10 +31,13 @@ input:focus, select:focus { border-color: #e50914; }
 .menu { position: absolute; right: 0; top: 58px; width: 230px; border-radius: 18px; padding: 10px; display: grid; gap: 8px; }
 .menu div, .menu button { border: 0; background: transparent; color: #eee; display: flex; align-items: center; gap: 10px; padding: 11px; border-radius: 12px; text-align: left; }
 .menu button:hover { background: rgba(255,255,255,.07); }
-.hero { min-height: 540px; padding: 120px 44px 64px; background-size: cover; background-position: center; display: flex; align-items: end; }
+.hero { position: relative; min-height: 540px; padding: 120px 44px 64px; background-size: cover; background-position: center; display: flex; align-items: end; transition: background-image .5s ease; }
 .hero.empty { background: linear-gradient(135deg, #171721, #0b0b0f); }
-.hero-copy { max-width: 720px; }
+.hero-copy { max-width: 720px; z-index: 1; }
 .eyebrow { color: #e50914; font-weight: 900; text-transform: uppercase; letter-spacing: .18em; }
+.hero-dots { position: absolute; left: 44px; bottom: 26px; display: flex; gap: 8px; align-items: center; }
+.hero-dots button { width: 9px; height: 9px; border: 0; border-radius: 999px; background: rgba(255,255,255,.45); padding: 0; transition: width .25s, background .25s; }
+.hero-dots button.active { width: 34px; background: #e50914; }
 .home { padding: 0 28px 60px; }
 .row { margin: 34px 0; }
 .cards { display: grid; grid-auto-flow: column; grid-auto-columns: 178px; gap: 16px; overflow-x: auto; padding-bottom: 14px; }
@@ -48,23 +51,36 @@ input:focus, select:focus { border-color: #e50914; }
 .details-grid { display: grid; grid-template-columns: 240px minmax(0, 760px); gap: 34px; align-items: end; padding-top: 160px; }
 .detail-poster { width: 240px; border-radius: 22px; box-shadow: 0 28px 90px rgba(0,0,0,.55); }
 .muted { color: #999; }
-.episodes { margin-top: 48px; }
-.episode-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
-.episode-grid button { border: 1px solid rgba(255,255,255,.08); background: #15151c; color: white; border-radius: 18px; padding: 12px; text-align: left; }
-.episode-grid img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 12px; }
-.episode-grid span { display: block; color: #e50914; margin-top: 8px; font-weight: 800; }
+.episodes { margin-top: 48px; max-width: 1100px; }
+.season { margin: 22px 0; }
+.season h3 { color: #f2f2f5; margin: 0 0 12px; }
+.episode-row { display: grid; grid-template-columns: 170px 1fr auto; gap: 16px; align-items: center; padding: 12px; margin-bottom: 10px; background: rgba(18,18,25,.8); border: 1px solid rgba(255,255,255,.08); border-radius: 18px; }
+.episode-row img { width: 170px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 12px; background: #171721; }
+.episode-row span { color: #e50914; font-weight: 900; }
+.episode-row strong { display: block; margin: 4px 0; }
+.episode-row p { margin: 0; font-size: 14px; color: #aaa; }
+.episode-play { width: 48px; height: 48px; border: 0; border-radius: 50%; background: #e50914; color: white; display: grid; place-items: center; }
 .player-page, .admin { min-height: 100vh; padding: 34px; }
 .player-shell { position: relative; max-width: 1180px; margin: 0 auto; background: black; border-radius: 26px; overflow: hidden; box-shadow: 0 34px 120px rgba(0,0,0,.6); }
 .player-shell video { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: black; display: block; }
-.player-controls { position: absolute; left: 18px; right: 18px; bottom: 18px; border-radius: 999px; padding: 10px; display: flex; gap: 10px; align-items: center; }
-.player-controls button { border: 0; background: rgba(255,255,255,.08); color: white; border-radius: 999px; min-width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 14px; }
-.player-controls select { max-width: 220px; border-radius: 999px; height: 44px; padding: 0 14px; }
+.player-controls { position: absolute; left: 18px; right: 18px; bottom: 18px; border-radius: 22px; padding: 10px; display: grid; gap: 8px; opacity: 1; transform: translateY(0); transition: opacity .25s, transform .25s; }
+.controls-hidden .player-controls { opacity: 0; pointer-events: none; transform: translateY(18px); }
+.timeline-row { display: grid; grid-template-columns: 48px 1fr 48px; align-items: center; gap: 10px; color: #ddd; font-size: 12px; }
+.timeline { accent-color: #e50914; padding: 0; height: 6px; }
+.controls-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.controls-row button { border: 0; background: rgba(255,255,255,.08); color: white; border-radius: 999px; min-width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 12px; }
+.compact-select, .speed { position: relative; width: auto; min-width: 44px; color: white; display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; background: rgba(255,255,255,.08); padding: 0 8px; height: 40px; }
+.compact-select select { width: 34px; max-width: 34px; opacity: .01; position: absolute; inset: 0; cursor: pointer; }
+.speed select { width: 58px; height: 30px; border: 0; background: transparent; padding: 0; font-size: 13px; }
 .flip { transform: rotate(180deg); }
 .intro { color: #111 !important; background: #f8f8f8 !important; font-weight: 800; }
+.loading-overlay { position: absolute; inset: 0; display: grid; place-items: center; align-content: center; gap: 12px; background: rgba(0,0,0,.35); color: white; font-weight: 800; }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .toast { position: fixed; right: 24px; bottom: 24px; z-index: 20; background: #e50914; color: white; padding: 14px 18px; border-radius: 16px; box-shadow: 0 18px 60px rgba(0,0,0,.35); }
 .admin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 18px; }
 .panel { border-radius: 24px; padding: 22px; }
 .panel p { border-top: 1px solid rgba(255,255,255,.08); padding-top: 12px; }
 .panel span { color: #999; font-size: 13px; word-break: break-all; }
 .code { margin: 14px 0; padding: 14px; border-radius: 14px; background: #e50914; color: white; font-size: 22px; font-weight: 900; letter-spacing: .12em; }
-@media (max-width: 760px) { .topbar { grid-template-columns: 1fr auto; height: auto; } .search { grid-column: 1 / -1; order: 3; } .hero { padding: 90px 24px 48px; min-height: 480px; } .home, .details, .player-page, .admin { padding: 22px; } .details-grid { grid-template-columns: 1fr; padding-top: 40px; } .detail-poster { width: min(220px, 100%); } .player-controls { position: static; border-radius: 0; flex-wrap: wrap; } }
+@media (max-width: 760px) { .topbar { grid-template-columns: 1fr auto; height: auto; } .search { grid-column: 1 / -1; order: 3; } .hero { padding: 90px 24px 48px; min-height: 480px; } .hero-dots { left: 24px; } .home, .details, .player-page, .admin { padding: 22px; } .details-grid { grid-template-columns: 1fr; padding-top: 40px; } .detail-poster { width: min(220px, 100%); } .episode-row { grid-template-columns: 100px 1fr auto; gap: 10px; } .episode-row img { width: 100px; } .episode-row p { display: none; } .player-page { padding: 0; background: black; } .player-page > .back, .player-page > h1 { margin-left: 16px; } .player-shell { border-radius: 0; min-height: 100dvh; display: grid; place-items: center; } .player-shell video { height: 100dvh; aspect-ratio: auto; } .player-controls { left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom)); } .intro { display: none !important; } }
