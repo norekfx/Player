@@ -6,6 +6,7 @@ export default defineConfig({
   server: {
     host: "0.0.0.0",
     port: 5173,
+    allowedHosts: ["player.mikswisite.cc"],
     proxy: {
       "/api": {
         target: "http://api:8090",
