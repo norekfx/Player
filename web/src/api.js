@@ -1,4 +1,5 @@
 const API_BASE = "/api";
+const UI_KEY = "player_ui_state_v1";
 
 export function getToken() {
   return localStorage.getItem("player_token");
@@ -7,11 +8,14 @@ export function getToken() {
 export function setSession(token, profile) {
   localStorage.setItem("player_token", token);
   localStorage.setItem("player_profile", JSON.stringify(profile));
+  localStorage.removeItem(UI_KEY);
+  sessionStorage.setItem("player_just_logged_in", "1");
 }
 
 export function clearSession() {
   localStorage.removeItem("player_token");
   localStorage.removeItem("player_profile");
+  localStorage.removeItem(UI_KEY);
 }
 
 export function getProfile() {
@@ -20,6 +24,12 @@ export function getProfile() {
   } catch {
     return null;
   }
+}
+
+export function consumeJustLoggedIn() {
+  const value = sessionStorage.getItem("player_just_logged_in") === "1";
+  sessionStorage.removeItem("player_just_logged_in");
+  return value;
 }
 
 export async function api(path, options = {}) {
