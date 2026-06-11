@@ -35,8 +35,35 @@ export function consumeJustLoggedIn() {
   return value;
 }
 
+async function assertGuestCanRequestStreams(token) {
+  if (!token) return;
+  const localProfile = getProfile();
+  if (localProfile?.role !== "guest") return;
+
+  const response = await fetch(`${API_BASE}/me`, {
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  const me = await response.json().catch(() => ({}));
+  if (!response.ok) return;
+
+  if (me?.role === "guest") {
+    localStorage.setItem("player_profile", JSON.stringify({ ...localProfile, ...me }));
+  }
+
+  const remaining = Number(me?.remaining ?? localProfile?.remaining ?? 0);
+  if (me?.limit_exhausted || remaining <= 0) {
+    throw new Error("Limit odtworzeń został wykorzystany. Dostęp dla tego gościa jest zablokowany.");
+  }
+}
+
 export async function api(path, options = {}) {
   const token = getToken();
+  if (String(path).startsWith("/streams/")) {
+    await assertGuestCanRequestStreams(token);
+  }
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
