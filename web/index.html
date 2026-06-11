@@ -32,6 +32,8 @@
     <script>
       (() => {
         const API_BASE = '/api';
+        const OLD_AUTOPLAY_MESSAGE = 'Kliknij play, jeśli przeglądarka zablokowała autoodtwarzanie.';
+        const NEW_AUTOPLAY_MESSAGE = 'Kliknij play, jeśli przeglądarka zablokowała autoodtwarzanie albo zmien jakosc jesli jest taka mozliwosc.';
         const token = () => localStorage.getItem('player_token') || '';
         const api = async (path, options = {}) => {
           const res = await fetch(API_BASE + path, { ...options, headers: { 'Content-Type': 'application/json', ...(token() ? { Authorization: 'Bearer ' + token() } : {}), ...(options.headers || {}) } });
@@ -44,6 +46,16 @@
         async function refreshCaches() {
           try { guestsCache = (await api('/admin/guests')).guests || []; } catch {}
           try { librariesCache = (await api('/catalogs')).libraries || []; } catch {}
+        }
+        function replaceAutoplayMessage() {
+          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+          const nodes = [];
+          while (walker.nextNode()) nodes.push(walker.currentNode);
+          nodes.forEach((node) => {
+            if (node.nodeValue && node.nodeValue.includes(OLD_AUTOPLAY_MESSAGE)) {
+              node.nodeValue = node.nodeValue.replaceAll(OLD_AUTOPLAY_MESSAGE, NEW_AUTOPLAY_MESSAGE);
+            }
+          });
         }
         function text(el) { return (el?.textContent || '').trim(); }
         function guestName(g) { return g.display_name || 'Bez nazwy'; }
@@ -179,12 +191,13 @@
           return res;
         };
         const observer = new MutationObserver(() => {
+          replaceAutoplayMessage();
           enhanceGuestList();
           enhanceCreateGuestPopup();
           enhanceGuestDetail();
         });
-        observer.observe(document.documentElement, { childList: true, subtree: true });
-        refreshCaches().then(() => { enhanceGuestList(); enhanceCreateGuestPopup(); enhanceGuestDetail(); });
+        observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+        refreshCaches().then(() => { replaceAutoplayMessage(); enhanceGuestList(); enhanceCreateGuestPopup(); enhanceGuestDetail(); });
       })();
     </script>
   </body>
