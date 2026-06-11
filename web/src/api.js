@@ -35,6 +35,25 @@ export function consumeJustLoggedIn() {
   return value;
 }
 
+function showLimitExhaustedPlayerView() {
+  if (typeof document === "undefined") return;
+  const page = document.querySelector(".player-page");
+  if (!page || page.querySelector(".limit-exhausted-screen")) return;
+
+  const shell = page.querySelector(".player-shell");
+  if (shell) shell.remove();
+  page.querySelectorAll(".toast").forEach((node) => node.remove());
+
+  const screen = document.createElement("section");
+  screen.className = "limit-exhausted-screen glass";
+  screen.style.cssText = "min-height:55vh;display:grid;place-items:center;text-align:center;border-radius:28px;margin:28px 0;padding:36px;background:rgba(0,0,0,.72);";
+  screen.innerHTML = '<h2 style="font-size:clamp(32px,6vw,72px);margin:0;color:#fff">Skończył się limit :(</h2>';
+
+  const title = page.querySelector("h1");
+  if (title?.nextSibling) page.insertBefore(screen, title.nextSibling);
+  else page.appendChild(screen);
+}
+
 async function assertGuestCanRequestStreams(token) {
   if (!token) return;
   const localProfile = getProfile();
@@ -55,7 +74,8 @@ async function assertGuestCanRequestStreams(token) {
 
   const remaining = Number(me?.remaining ?? localProfile?.remaining ?? 0);
   if (me?.limit_exhausted || remaining <= 0) {
-    throw new Error("Limit odtworzeń został wykorzystany. Dostęp dla tego gościa jest zablokowany.");
+    showLimitExhaustedPlayerView();
+    throw new Error("Skończył się limit :(");
   }
 }
 
