@@ -15,12 +15,11 @@ from sqlmodel import Session, select
 from .addons import AddonError, fetch_catalog, fetch_manifest, fetch_meta, fetch_search, fetch_streams, fetch_subtitles, normalize_addon_url
 from .config import get_settings
 from .db import create_db_and_tables, get_session
-from .models import Addon, AppSetting, GuestAllowedContent, GuestProfile, PlaybackHistory, SearchLog, User
+from .models import Addon, AppSetting, GuestAccessCode, GuestAllowedContent, GuestHiddenLibrary, GuestProfile, PlaybackHistory, SearchLog, User
 from .security import create_token, hash_secret, require_actor, require_admin, verify_secret
 
 settings = get_settings()
 app = FastAPI(title=settings.app_name)
-
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origin_list, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 class AdminRegisterRequest(BaseModel):
@@ -32,10 +31,12 @@ class LoginRequest(BaseModel):
 class GuestLoginRequest(BaseModel):
     code: str = Field(min_length=6, max_length=6)
 class GuestCreateRequest(BaseModel):
-    display_name: str = Field(default="Gość", max_length=80)
+    display_name: str = Field(default="", max_length=80)
     play_limit: int = Field(default=10, ge=0, le=9999)
 class GuestLimitRequest(BaseModel):
     play_limit: int = Field(ge=0, le=9999)
+class GuestHiddenLibrariesRequest(BaseModel):
+    catalog_keys: list[str] = []
 class GuestAllowedContentRequest(BaseModel):
     content_type: str
     content_id: str
@@ -92,9 +93,16 @@ def get_json_setting(session: Session, key: str, default):
 def public_addon(addon: Addon) -> dict:
     return {"id": addon.id, "url": addon.url, "manifest_id": addon.manifest_id, "name": addon.name, "version": addon.version, "enabled": addon.enabled, "manifest": json.loads(addon.manifest_json)}
 
-def public_guest(g: GuestProfile) -> dict:
+def stored_guest_code(session: Session, guest_id: int) -> str:
+    row = session.exec(select(GuestAccessCode).where(GuestAccessCode.guest_id == guest_id)).first()
+    return row.code if row else ""
+
+def public_guest(g: GuestProfile, session: Session | None = None, include_code: bool = False) -> dict:
     remaining = max(0, g.play_limit - g.plays_used)
-    return {"id": g.id, "display_name": g.display_name, "limit": g.play_limit, "used": g.plays_used, "remaining": remaining, "active": g.is_active, "limit_exhausted": remaining <= 0, "created_at": g.created_at.isoformat()}
+    data = {"id": g.id, "display_name": g.display_name, "limit": g.play_limit, "used": g.plays_used, "remaining": remaining, "active": g.is_active, "limit_exhausted": remaining <= 0, "created_at": g.created_at.isoformat()}
+    if include_code and session:
+        data["code"] = stored_guest_code(session, g.id)
+    return data
 
 def public_allowed(row: GuestAllowedContent) -> dict:
     return {"id": row.id, "guest_id": row.guest_id, "content_type": row.content_type, "content_id": row.content_id, "title": row.title, "poster": row.poster, "created_at": row.created_at.isoformat()}
@@ -111,6 +119,10 @@ def guest_allowed_rows(session: Session, guest_id: int) -> list[GuestAllowedCont
 
 def guest_allowed_keys(session: Session, guest_id: int) -> set[str]:
     return {f"{r.content_type}:{r.content_id}" for r in guest_allowed_rows(session, guest_id)}
+
+def guest_hidden_library_keys(session: Session, guest_id: int) -> set[str]:
+    rows = session.exec(select(GuestHiddenLibrary).where(GuestHiddenLibrary.guest_id == guest_id)).all()
+    return {row.catalog_key for row in rows}
 
 def filter_for_guest_allowed(items: list[dict], content_type: str, actor: dict, session: Session) -> list[dict]:
     if actor.get("role") != "guest":
@@ -160,7 +172,7 @@ def guest_login(payload: GuestLoginRequest, session: Session = Depends(get_sessi
     if not guest:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid guest code")
     remaining = max(0, guest.play_limit - guest.plays_used)
-    return {"token": create_token(guest.display_name, "guest", guest.id), "guest": {"id": guest.id, "display_name": guest.display_name, "remaining": remaining, "limit": guest.play_limit, "limit_exhausted": remaining <= 0}}
+    return {"token": create_token(guest.display_name or "Gość", "guest", guest.id), "guest": {"id": guest.id, "display_name": guest.display_name, "remaining": remaining, "limit": guest.play_limit, "limit_exhausted": remaining <= 0}}
 @app.get("/api/me")
 def me(actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
     if actor.get("role") == "guest":
@@ -183,9 +195,10 @@ def update_settings(payload: AppSettingsRequest, _: User = Depends(require_admin
 @app.post("/api/admin/guests")
 def create_guest(payload: GuestCreateRequest, _: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
     code = "".join(str(random.randint(0, 9)) for _ in range(settings.guest_code_length))
-    guest = GuestProfile(code_hash=hash_secret(code), display_name=payload.display_name, play_limit=payload.play_limit)
+    guest = GuestProfile(code_hash=hash_secret(code), display_name=payload.display_name.strip(), play_limit=payload.play_limit)
     session.add(guest); session.commit(); session.refresh(guest)
-    return {**public_guest(guest), "code": code}
+    session.add(GuestAccessCode(guest_id=guest.id, code=code)); session.commit()
+    return {**public_guest(guest, session, include_code=True), "code": code}
 @app.get("/api/admin/guests")
 def list_guests(_: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
     guests = session.exec(select(GuestProfile).order_by(GuestProfile.created_at.desc())).all()
@@ -197,7 +210,18 @@ def guest_detail(guest_id: int, _: User = Depends(require_admin), session: Sessi
         raise HTTPException(status_code=404, detail="Guest not found")
     history = session.exec(select(PlaybackHistory).where(PlaybackHistory.actor_type == "guest").where(PlaybackHistory.actor_id == guest_id).order_by(PlaybackHistory.updated_at.desc()).limit(200)).all()
     allowed = guest_allowed_rows(session, guest_id)
-    return {"guest": public_guest(guest), "allowed": [public_allowed(row) for row in allowed], "history": [{"content_type": h.content_type, "content_id": h.content_id, "title": h.title, "season": h.season, "episode": h.episode, "position_seconds": h.position_seconds, "duration_seconds": h.duration_seconds, "updated_at": h.updated_at.isoformat()} for h in history]}
+    return {"guest": public_guest(guest, session, include_code=True), "allowed": [public_allowed(row) for row in allowed], "hidden_catalog_keys": list(guest_hidden_library_keys(session, guest_id)), "history": [{"content_type": h.content_type, "content_id": h.content_id, "title": h.title, "season": h.season, "episode": h.episode, "position_seconds": h.position_seconds, "duration_seconds": h.duration_seconds, "updated_at": h.updated_at.isoformat()} for h in history]}
+@app.put("/api/admin/guests/{guest_id}/hidden-libraries")
+def update_guest_hidden_libraries(guest_id: int, payload: GuestHiddenLibrariesRequest, _: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
+    guest = session.get(GuestProfile, guest_id)
+    if not guest:
+        raise HTTPException(status_code=404, detail="Guest not found")
+    for row in session.exec(select(GuestHiddenLibrary).where(GuestHiddenLibrary.guest_id == guest_id)).all():
+        session.delete(row)
+    for key in sorted(set(payload.catalog_keys)):
+        session.add(GuestHiddenLibrary(guest_id=guest_id, catalog_key=key))
+    session.commit()
+    return {"ok": True, "hidden_catalog_keys": sorted(set(payload.catalog_keys))}
 @app.patch("/api/admin/guests/{guest_id}/limit")
 def update_guest_limit(guest_id: int, payload: GuestLimitRequest, _: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
     guest = session.get(GuestProfile, guest_id)
@@ -223,8 +247,10 @@ def toggle_guest(guest_id: int, _: User = Depends(require_admin), session: Sessi
 def delete_guest(guest_id: int, _: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
     guest = session.get(GuestProfile, guest_id)
     if not guest: raise HTTPException(status_code=404, detail="Guest not found")
-    for row in guest_allowed_rows(session, guest_id):
-        session.delete(row)
+    for row in guest_allowed_rows(session, guest_id): session.delete(row)
+    for row in session.exec(select(GuestHiddenLibrary).where(GuestHiddenLibrary.guest_id == guest_id)).all(): session.delete(row)
+    code = session.exec(select(GuestAccessCode).where(GuestAccessCode.guest_id == guest_id)).first()
+    if code: session.delete(code)
     session.delete(guest); session.commit()
     return {"ok": True}
 @app.post("/api/admin/guests/{guest_id}/allowed")
@@ -233,8 +259,7 @@ def add_guest_allowed(guest_id: int, payload: GuestAllowedContentRequest, _: Use
     if not guest: raise HTTPException(status_code=404, detail="Guest not found")
     existing = session.exec(select(GuestAllowedContent).where(GuestAllowedContent.guest_id == guest_id).where(GuestAllowedContent.content_type == payload.content_type).where(GuestAllowedContent.content_id == payload.content_id)).first()
     row = existing or GuestAllowedContent(guest_id=guest_id, content_type=payload.content_type, content_id=payload.content_id)
-    row.title = payload.title
-    row.poster = payload.poster
+    row.title = payload.title; row.poster = payload.poster
     session.add(row); session.commit(); session.refresh(row)
     return public_allowed(row)
 @app.delete("/api/admin/guests/{guest_id}/allowed/{allowed_id}")
@@ -274,6 +299,8 @@ def list_addons(actor: dict = Depends(require_actor), session: Session = Depends
 async def catalogs(actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
     addons = session.exec(select(Addon).where(Addon.enabled == True)).all()
     hidden_for_guest = set(get_json_setting(session, "guest_hidden_catalog_keys", [])) if actor.get("role") == "guest" else set()
+    if actor.get("role") == "guest":
+        hidden_for_guest |= guest_hidden_library_keys(session, actor["id"])
     libraries: list[dict] = []
     for addon in addons:
         manifest = json.loads(addon.manifest_json)
@@ -294,11 +321,15 @@ async def catalogs(actor: dict = Depends(require_actor), session: Session = Depe
 async def search(payload: SearchRequest, actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
     session.add(SearchLog(actor_type=actor["role"], actor_id=actor["id"], query=payload.query)); session.commit()
     addons = session.exec(select(Addon).where(Addon.enabled == True)).all()
+    hidden_for_guest = set(get_json_setting(session, "guest_hidden_catalog_keys", [])) if actor.get("role") == "guest" else set()
+    if actor.get("role") == "guest": hidden_for_guest |= guest_hidden_library_keys(session, actor["id"])
     results: list[dict] = []; seen: set[str] = set(); needle = payload.query.lower().strip()
     for addon in addons:
         manifest = json.loads(addon.manifest_json)
         for catalog in manifest.get("catalogs", []):
-            catalog_type = catalog.get("type", "movie"); catalog_id = catalog.get("id"); data = None; used_search = False
+            catalog_type = catalog.get("type", "movie"); catalog_id = catalog.get("id")
+            if catalog_key(addon.id, catalog_type, catalog_id) in hidden_for_guest: continue
+            data = None; used_search = False
             try:
                 data = await fetch_search(addon.url, catalog_type, catalog_id, payload.query); used_search = True
             except Exception:
