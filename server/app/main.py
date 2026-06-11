@@ -4,6 +4,7 @@ from datetime import datetime
 import json
 import random
 import re
+from urllib.parse import quote
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
@@ -28,50 +29,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 class AdminRegisterRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     password: str = Field(min_length=8, max_length=256)
-
-
 class LoginRequest(BaseModel):
     username: str
     password: str
-
-
 class GuestLoginRequest(BaseModel):
     code: str = Field(min_length=6, max_length=6)
-
-
 class GuestCreateRequest(BaseModel):
     display_name: str = Field(default="Gość", max_length=80)
     play_limit: int = Field(default=10, ge=0, le=9999)
-
-
 class GuestLimitRequest(BaseModel):
     play_limit: int = Field(ge=0, le=9999)
-
-
 class AddonInstallRequest(BaseModel):
     url: str
-
-
 class SearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=200)
-
-
 class AppSettingsRequest(BaseModel):
     featured_catalog_key: str = ""
-
-
 class PlaybackStartRequest(BaseModel):
     content_type: str
     content_id: str
     title: str = ""
     season: int | None = None
     episode: int | None = None
-
-
 class PlaybackProgressRequest(BaseModel):
     content_type: str
     content_id: str
@@ -81,20 +63,16 @@ class PlaybackProgressRequest(BaseModel):
     position_seconds: int = Field(default=0, ge=0)
     duration_seconds: int = Field(default=0, ge=0)
 
-
 @app.on_event("startup")
 def on_startup() -> None:
     create_db_and_tables()
 
-
 def admin_exists(session: Session) -> bool:
     return session.exec(select(User).where(User.role == "admin")).first() is not None
-
 
 def get_setting(session: Session, key: str, default: str = "") -> str:
     setting = session.get(AppSetting, key)
     return setting.value if setting else default
-
 
 def set_setting(session: Session, key: str, value: str) -> None:
     setting = session.get(AppSetting, key) or AppSetting(key=key, value=value)
@@ -103,9 +81,7 @@ def set_setting(session: Session, key: str, value: str) -> None:
     session.add(setting)
     session.commit()
 
-
 def public_addon(addon: Addon) -> dict:
-    manifest = json.loads(addon.manifest_json)
     return {
         "id": addon.id,
         "url": addon.url,
@@ -113,9 +89,8 @@ def public_addon(addon: Addon) -> dict:
         "name": addon.name,
         "version": addon.version,
         "enabled": addon.enabled,
-        "manifest": manifest,
+        "manifest": json.loads(addon.manifest_json),
     }
-
 
 def srt_to_vtt(text: str) -> str:
     body = text.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
@@ -124,16 +99,13 @@ def srt_to_vtt(text: str) -> str:
     body = re.sub(r"(\d{2}:\d{2}:\d{2}),(\d{3})", r"\1.\2", body)
     return "WEBVTT\n\n" + body.lstrip()
 
-
 @app.get("/api/health")
 def health() -> dict:
     return {"ok": True, "app": settings.app_name}
 
-
 @app.get("/api/bootstrap")
 def bootstrap(session: Session = Depends(get_session)) -> dict:
     return {"needs_admin_registration": not admin_exists(session)}
-
 
 @app.post("/api/auth/register-admin")
 def register_admin(payload: AdminRegisterRequest, session: Session = Depends(get_session)) -> dict:
@@ -145,14 +117,12 @@ def register_admin(payload: AdminRegisterRequest, session: Session = Depends(get
     session.refresh(user)
     return {"token": create_token(user.username, "admin", user.id), "user": {"id": user.id, "username": user.username, "role": "admin"}}
 
-
 @app.post("/api/auth/login")
 def login(payload: LoginRequest, session: Session = Depends(get_session)) -> dict:
     user = session.exec(select(User).where(User.username == payload.username)).first()
     if not user or not verify_secret(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     return {"token": create_token(user.username, "admin", user.id), "user": {"id": user.id, "username": user.username, "role": "admin"}}
-
 
 @app.post("/api/auth/guest")
 def guest_login(payload: GuestLoginRequest, session: Session = Depends(get_session)) -> dict:
@@ -163,40 +133,32 @@ def guest_login(payload: GuestLoginRequest, session: Session = Depends(get_sessi
     remaining = max(0, guest.play_limit - guest.plays_used)
     return {"token": create_token(guest.display_name, "guest", guest.id), "guest": {"id": guest.id, "display_name": guest.display_name, "remaining": remaining, "limit": guest.play_limit}}
 
-
 @app.get("/api/me")
 def me(actor: dict = Depends(require_actor)) -> dict:
     return actor
 
-
 @app.get("/api/settings")
 def app_settings(actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
     return {"featured_catalog_key": get_setting(session, "featured_catalog_key", "")}
-
 
 @app.put("/api/admin/settings")
 def update_settings(payload: AppSettingsRequest, _: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
     set_setting(session, "featured_catalog_key", payload.featured_catalog_key)
     return {"ok": True, "featured_catalog_key": payload.featured_catalog_key}
 
-
 @app.post("/api/admin/guests")
 def create_guest(payload: GuestCreateRequest, _: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
-    for _attempt in range(20):
-        code = "".join(str(random.randint(0, 9)) for _ in range(settings.guest_code_length))
-        guest = GuestProfile(code_hash=hash_secret(code), display_name=payload.display_name, play_limit=payload.play_limit)
-        session.add(guest)
-        session.commit()
-        session.refresh(guest)
-        return {"id": guest.id, "code": code, "display_name": guest.display_name, "limit": guest.play_limit, "used": guest.plays_used, "active": guest.is_active}
-    raise HTTPException(status_code=500, detail="Could not generate guest code")
-
+    code = "".join(str(random.randint(0, 9)) for _ in range(settings.guest_code_length))
+    guest = GuestProfile(code_hash=hash_secret(code), display_name=payload.display_name, play_limit=payload.play_limit)
+    session.add(guest)
+    session.commit()
+    session.refresh(guest)
+    return {"id": guest.id, "code": code, "display_name": guest.display_name, "limit": guest.play_limit, "used": guest.plays_used, "active": guest.is_active}
 
 @app.get("/api/admin/guests")
 def list_guests(_: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
     guests = session.exec(select(GuestProfile).order_by(GuestProfile.created_at.desc())).all()
     return {"guests": [{"id": g.id, "display_name": g.display_name, "limit": g.play_limit, "used": g.plays_used, "remaining": max(0, g.play_limit - g.plays_used), "active": g.is_active, "created_at": g.created_at.isoformat()} for g in guests]}
-
 
 @app.patch("/api/admin/guests/{guest_id}/limit")
 def update_guest_limit(guest_id: int, payload: GuestLimitRequest, _: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
@@ -208,7 +170,6 @@ def update_guest_limit(guest_id: int, payload: GuestLimitRequest, _: User = Depe
     session.commit()
     return {"ok": True}
 
-
 @app.patch("/api/admin/guests/{guest_id}/toggle")
 def toggle_guest(guest_id: int, _: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
     guest = session.get(GuestProfile, guest_id)
@@ -219,7 +180,6 @@ def toggle_guest(guest_id: int, _: User = Depends(require_admin), session: Sessi
     session.commit()
     return {"ok": True, "active": guest.is_active}
 
-
 @app.delete("/api/admin/guests/{guest_id}")
 def delete_guest(guest_id: int, _: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
     guest = session.get(GuestProfile, guest_id)
@@ -228,7 +188,6 @@ def delete_guest(guest_id: int, _: User = Depends(require_admin), session: Sessi
     session.delete(guest)
     session.commit()
     return {"ok": True}
-
 
 @app.post("/api/admin/addons")
 async def install_addon(payload: AddonInstallRequest, _: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
@@ -239,25 +198,32 @@ async def install_addon(payload: AddonInstallRequest, _: User = Depends(require_
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Nie udało się dodać addonu: {exc}") from exc
-
     existing = session.exec(select(Addon).where(Addon.url == url)).first()
     addon = existing or Addon(url=url, manifest_id=manifest["id"], name=manifest["name"], manifest_json="{}")
     addon.manifest_id = manifest["id"]
     addon.name = manifest["name"]
     addon.version = str(manifest.get("version", "unknown"))
     addon.manifest_json = json.dumps(manifest)
+    addon.enabled = True
     addon.updated_at = datetime.utcnow()
     session.add(addon)
     session.commit()
     session.refresh(addon)
     return public_addon(addon)
 
+@app.delete("/api/admin/addons/{addon_id}")
+def delete_addon(addon_id: int, _: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
+    addon = session.get(Addon, addon_id)
+    if not addon:
+        raise HTTPException(status_code=404, detail="Addon not found")
+    session.delete(addon)
+    session.commit()
+    return {"ok": True}
 
 @app.get("/api/addons")
 def list_addons(actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
     addons = session.exec(select(Addon).where(Addon.enabled == True)).all()
     return {"addons": [public_addon(addon) for addon in addons]}
-
 
 @app.get("/api/catalogs")
 async def catalogs(actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
@@ -276,7 +242,6 @@ async def catalogs(actor: dict = Depends(require_actor), session: Session = Depe
                 libraries.append({"key": key, "addon": addon.name, "addon_id": addon.id, "catalog": catalog, "items": [], "error": str(exc)})
     return {"libraries": libraries, "settings": {"featured_catalog_key": get_setting(session, "featured_catalog_key", "")}}
 
-
 @app.post("/api/search")
 async def search(payload: SearchRequest, actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
     session.add(SearchLog(actor_type=actor["role"], actor_id=actor["id"], query=payload.query))
@@ -284,24 +249,24 @@ async def search(payload: SearchRequest, actor: dict = Depends(require_actor), s
     addons = session.exec(select(Addon).where(Addon.enabled == True)).all()
     results: list[dict] = []
     seen: set[str] = set()
-    needle = payload.query.lower()
+    needle = payload.query.lower().strip()
     for addon in addons:
         manifest = json.loads(addon.manifest_json)
         for catalog in manifest.get("catalogs", []):
             catalog_type = catalog.get("type", "movie")
             catalog_id = catalog.get("id")
             data = None
+            used_search = False
             try:
                 data = await fetch_search(addon.url, catalog_type, catalog_id, payload.query)
+                used_search = True
             except Exception:
                 try:
                     data = await fetch_catalog(addon.url, catalog_type, catalog_id)
                 except Exception:
                     data = None
             for item in (data or {}).get("metas", []):
-                if data is None:
-                    continue
-                if "search=" not in str(data) and needle not in str(item.get("name", "")).lower() and needle not in str(item.get("description", "")).lower():
+                if not used_search and needle not in str(item.get("name", "")).lower() and needle not in str(item.get("description", "")).lower():
                     continue
                 key = f"{catalog_type}:{item.get('id')}"
                 if key in seen:
@@ -311,7 +276,6 @@ async def search(payload: SearchRequest, actor: dict = Depends(require_actor), s
     movies = [r for r in results if r.get("type") == "movie"]
     series = [r for r in results if r.get("type") in ("series", "show", "tv")]
     return {"results": results, "movies": movies, "series": series}
-
 
 @app.get("/api/meta/{content_type}/{content_id}")
 async def meta(content_type: str, content_id: str, actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
@@ -326,7 +290,6 @@ async def meta(content_type: str, content_id: str, actor: dict = Depends(require
             errors.append(f"{addon.name}: {exc}")
     raise HTTPException(status_code=404, detail={"message": "Meta not found", "errors": errors})
 
-
 @app.get("/api/streams/{content_type}/{content_id}")
 async def streams(content_type: str, content_id: str, actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
     addons = session.exec(select(Addon).where(Addon.enabled == True)).all()
@@ -340,7 +303,6 @@ async def streams(content_type: str, content_id: str, actor: dict = Depends(requ
             continue
     return {"streams": streams_list}
 
-
 @app.get("/api/subtitles/{content_type}/{content_id}")
 async def subtitles(content_type: str, content_id: str, actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
     addons = session.exec(select(Addon).where(Addon.enabled == True)).all()
@@ -353,12 +315,11 @@ async def subtitles(content_type: str, content_id: str, actor: dict = Depends(re
                 proxied = {**subtitle, "addon": addon.name}
                 if original_url:
                     proxied["original_url"] = original_url
-                    proxied["url"] = f"/api/subtitle-proxy?url={original_url}"
+                    proxied["url"] = f"/api/subtitle-proxy?url={quote(original_url, safe='')}"
                 subtitle_list.append(proxied)
         except Exception:
             continue
     return {"subtitles": subtitle_list}
-
 
 @app.get("/api/subtitle-proxy")
 async def subtitle_proxy(url: str = Query(...), actor: dict = Depends(require_actor)) -> Response:
@@ -372,7 +333,6 @@ async def subtitle_proxy(url: str = Query(...), actor: dict = Depends(require_ac
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Subtitle download failed: {exc}") from exc
     return Response(content=srt_to_vtt(text), media_type="text/vtt; charset=utf-8")
-
 
 @app.post("/api/playback/start")
 def playback_start(payload: PlaybackStartRequest, actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
@@ -393,16 +353,9 @@ def playback_start(payload: PlaybackStartRequest, actor: dict = Depends(require_
         remaining = max(0, guest.play_limit - guest.plays_used)
     return {"ok": True, "remaining": remaining}
 
-
 @app.post("/api/playback/progress")
 def playback_progress(payload: PlaybackProgressRequest, actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
-    existing = session.exec(
-        select(PlaybackHistory)
-        .where(PlaybackHistory.actor_type == actor["role"])
-        .where(PlaybackHistory.actor_id == actor["id"])
-        .where(PlaybackHistory.content_id == payload.content_id)
-        .order_by(PlaybackHistory.updated_at.desc())
-    ).first()
+    existing = session.exec(select(PlaybackHistory).where(PlaybackHistory.actor_type == actor["role"]).where(PlaybackHistory.actor_id == actor["id"]).where(PlaybackHistory.content_id == payload.content_id).order_by(PlaybackHistory.updated_at.desc())).first()
     history = existing or PlaybackHistory(actor_type=actor["role"], actor_id=actor["id"], content_type=payload.content_type, content_id=payload.content_id)
     history.title = payload.title
     history.content_type = payload.content_type
@@ -415,18 +368,10 @@ def playback_progress(payload: PlaybackProgressRequest, actor: dict = Depends(re
     session.commit()
     return {"ok": True}
 
-
 @app.get("/api/playback/history")
 def playback_history(actor: dict = Depends(require_actor), session: Session = Depends(get_session)) -> dict:
-    rows = session.exec(
-        select(PlaybackHistory)
-        .where(PlaybackHistory.actor_type == actor["role"])
-        .where(PlaybackHistory.actor_id == actor["id"])
-        .order_by(PlaybackHistory.updated_at.desc())
-        .limit(200)
-    ).all()
+    rows = session.exec(select(PlaybackHistory).where(PlaybackHistory.actor_type == actor["role"]).where(PlaybackHistory.actor_id == actor["id"]).order_by(PlaybackHistory.updated_at.desc()).limit(200)).all()
     return {"history": [{"content_type": h.content_type, "content_id": h.content_id, "title": h.title, "season": h.season, "episode": h.episode, "position_seconds": h.position_seconds, "duration_seconds": h.duration_seconds, "updated_at": h.updated_at.isoformat()} for h in rows]}
-
 
 @app.get("/api/admin/logs/searches")
 def search_logs(_: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
