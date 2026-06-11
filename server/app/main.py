@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from .addons import fetch_catalog, fetch_manifest, fetch_meta, fetch_streams, fetch_subtitles, normalize_addon_url
+from .addons import AddonError, fetch_catalog, fetch_manifest, fetch_meta, fetch_streams, fetch_subtitles, normalize_addon_url
 from .config import get_settings
 from .db import create_db_and_tables, get_session
 from .models import Addon, GuestProfile, PlaybackHistory, SearchLog, User
@@ -184,8 +184,14 @@ def delete_guest(guest_id: int, _: User = Depends(require_admin), session: Sessi
 
 @app.post("/api/admin/addons")
 async def install_addon(payload: AddonInstallRequest, _: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
-    url = normalize_addon_url(payload.url)
-    manifest = await fetch_manifest(url)
+    try:
+        url = normalize_addon_url(payload.url)
+        manifest = await fetch_manifest(url)
+    except AddonError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Nie udało się dodać addonu: {exc}") from exc
+
     existing = session.exec(select(Addon).where(Addon.url == url)).first()
     addon = existing or Addon(url=url, manifest_id=manifest["id"], name=manifest["name"], manifest_json="{}")
     addon.manifest_id = manifest["id"]
