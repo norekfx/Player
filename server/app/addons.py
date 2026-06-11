@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 import httpx
 
 
@@ -53,6 +53,11 @@ async def fetch_manifest(base_url: str) -> dict:
 
 async def fetch_catalog(base_url: str, content_type: str, catalog_id: str) -> dict:
     return await fetch_json(base_url, f"catalog/{content_type}/{catalog_id}.json")
+
+
+async def fetch_search(base_url: str, content_type: str, catalog_id: str, query: str) -> dict:
+    safe_query = quote(query.strip())
+    return await fetch_json(base_url, f"catalog/{content_type}/{catalog_id}/search={safe_query}.json")
 
 
 async def fetch_meta(base_url: str, content_type: str, content_id: str) -> dict:
