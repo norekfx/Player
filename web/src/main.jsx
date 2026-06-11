@@ -12,6 +12,10 @@ function fmt(seconds = 0) {
   return h ? `${h}:${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}` : `${m}:${String(r).padStart(2, "0")}`;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function itemType(item) {
   const type = item?.type || item?.contentType || item?.kind || item?.catalogType;
   if (["series", "show", "tv"].includes(type)) return "series";
@@ -152,7 +156,6 @@ function ResultsPage({ query, results, onBack, onOpen }) {
 
 function Details({ item, history, onBack, onPlay }) {
   const [meta, setMeta] = useState(item);
-  const [loadingIds, setLoadingIds] = useState({});
   const type = itemType(meta);
 
   useEffect(() => {
@@ -175,20 +178,8 @@ function Details({ item, history, onBack, onPlay }) {
     return almostFinished ? sorted[idx + 1] || sorted[idx] : sorted[idx];
   }, [videos, last]);
 
-  function preloadStreams(target) {
-    const playable = playableFrom(meta, target, target.type || type);
-    setLoadingIds((v) => ({ ...v, [playable.id]: true }));
-    api(`/streams/${playable.type || type}/${encodeURIComponent(playable.id)}`).catch(() => {}).finally(() => setLoadingIds((v) => ({ ...v, [playable.id]: false })));
-  }
-
-  useEffect(() => {
-    const target = nextEpisode ? { ...nextEpisode, type: "series" } : { ...meta, type };
-    if (target.id) preloadStreams(target);
-  }, [meta.id, nextEpisode?.id]);
-
   function playTarget(target) {
-    const playable = playableFrom(meta, target, target.type || type);
-    onPlay(playable, []);
+    onPlay(playableFrom(meta, target, target.type || type), []);
   }
 
   const bg = meta.background || meta.backdrop || meta.poster;
@@ -197,7 +188,7 @@ function Details({ item, history, onBack, onPlay }) {
   return <main className="details" style={{ backgroundImage: bg ? `linear-gradient(180deg, rgba(11,11,15,.35), #0b0b0f 52%), url(${bg})` : undefined }}>
     <button className="link back" onClick={onBack}>← Wróć</button>
     <section className="details-grid">{meta.poster && <img className="detail-poster" src={meta.poster} alt="" />}<div><h1>{meta.name}</h1><p>{meta.description || "Brak opisu w addonie."}</p><button className="primary" onClick={() => playTarget(primaryTarget)}><Play size={18} /> {primaryLabel}</button></div></section>
-    {videos.length > 0 && <section className="episodes"><h2>Sezony</h2>{Object.entries(grouped).map(([season, eps]) => <div className="season" key={season}><h3>Sezon {season}</h3>{eps.map((ep) => <div className="episode-row" key={ep.id}><img src={ep.thumbnail || ep.poster || meta.poster} alt="" /><div><span>{episodeLabel(ep)}</span><strong>{ep.title || "Odcinek"}</strong><p>{ep.overview || ep.description || "Brak opisu odcinka."}</p></div><button className="episode-play" onClick={() => playTarget({ ...ep, type: "series" })}>{loadingIds[ep.id] ? <Loader2 className="spin" /> : <Play />}</button></div>)}</div>)}</section>}
+    {videos.length > 0 && <section className="episodes"><h2>Sezony</h2>{Object.entries(grouped).map(([season, eps]) => <div className="season" key={season}><h3>Sezon {season}</h3>{eps.map((ep) => <div className="episode-row" key={ep.id}><img src={ep.thumbnail || ep.poster || meta.poster} alt="" /><div><span>{episodeLabel(ep)}</span><strong>{ep.title || "Odcinek"}</strong><p>{ep.overview || ep.description || "Brak opisu odcinka."}</p></div><button className="episode-play" onClick={() => playTarget({ ...ep, type: "series" })}><Play /></button></div>)}</div>)}</section>}
   </main>;
 }
 
@@ -214,23 +205,62 @@ function Player({ item, initialStreams, profile, onClose, onLimitUpdate }) {
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [retryCountdown, setRetryCountdown] = useState(null);
+  const [finalNoSources, setFinalNoSources] = useState(false);
   const stream = streams[streamIndex];
 
   function showControls() { setVisible(true); clearTimeout(hideRef.current); hideRef.current = setTimeout(() => setVisible(false), 5000); }
   useEffect(() => { showControls(); return () => clearTimeout(hideRef.current); }, []);
 
+  async function fetchStreamsOnce(active) {
+    const data = await api(`/streams/${item.type || "movie"}/${encodeURIComponent(item.id)}`);
+    if (!active()) return [];
+    const nextStreams = data.streams || [];
+    setStreams(nextStreams);
+    setStreamIndex(0);
+    return nextStreams;
+  }
+
   useEffect(() => {
     let active = true;
-    setStreams(initialStreams || []);
+    const isActive = () => active;
+    setStreams([]);
     setStreamIndex(0);
     setSubtitles([]);
     setSubtitleIndex(-1);
     setLoading(true);
+    setRetryCountdown(null);
+    setFinalNoSources(false);
+    setNotice("");
 
-    api(`/streams/${item.type || "movie"}/${encodeURIComponent(item.id)}`)
-      .then((data) => { if (active) setStreams(data.streams || []); })
-      .catch((err) => { if (active) setNotice(`Nie znaleziono źródeł: ${err.message}`); })
-      .finally(() => { if (active) setLoading(false); });
+    async function runStreamSearch() {
+      try {
+        const first = await fetchStreamsOnce(isActive);
+        if (!isActive() || first.length > 0) return;
+
+        for (let remaining = 60; remaining > 0; remaining -= 1) {
+          if (!isActive()) return;
+          setRetryCountdown(remaining);
+          await sleep(1000);
+        }
+        if (!isActive()) return;
+        setRetryCountdown(0);
+        setLoading(true);
+
+        const second = await fetchStreamsOnce(isActive);
+        if (!isActive()) return;
+        if (second.length === 0) setFinalNoSources(true);
+      } catch {
+        if (isActive()) setFinalNoSources(true);
+      } finally {
+        if (isActive()) {
+          setLoading(false);
+          setRetryCountdown(null);
+        }
+      }
+    }
+
+    runStreamSearch();
 
     api(`/subtitles/${item.type || "movie"}/${encodeURIComponent(item.id)}`)
       .then((data) => active && setSubtitles(data.subtitles || []))
@@ -239,6 +269,7 @@ function Player({ item, initialStreams, profile, onClose, onLimitUpdate }) {
     api("/playback/start", { method: "POST", body: JSON.stringify({ content_type: item.type || "movie", content_id: item.id, title: item.name, season: item.season, episode: item.episode }) }).then((data) => {
       if (profile?.role === "guest" && data.remaining !== null) { setNotice(`Pozostało ci ${data.remaining} z ${profile.limit} limitu odtworzonych filmów`); onLimitUpdate?.(data.remaining); setTimeout(() => setNotice(""), 4500); }
     }).catch((err) => setNotice(err.message));
+
     return () => { active = false; };
   }, [item.id, item.type]);
 
@@ -260,12 +291,18 @@ function Player({ item, initialStreams, profile, onClose, onLimitUpdate }) {
   function seek(e) { const v = videoRef.current; if (!v || !duration) return; v.currentTime = Number(e.target.value); setTime(v.currentTime); }
   function fullscreen() { const shell = videoRef.current?.parentElement; shell?.requestFullscreen?.(); }
 
+  const statusText = retryCountdown !== null
+    ? `Nie znaleziono źródeł. Ponawiam wyszukiwanie za ${retryCountdown}s...`
+    : finalNoSources
+      ? "Brak źródeł do tego tytułu"
+      : "Szukam źródeł...";
+
   return <main className="player-page"><button className="link back" onClick={onClose}>← Zamknij odtwarzacz</button><h1>{item.name}</h1>{notice && <div className="toast">{notice}</div>}
     <div className={`player-shell ${visible ? "controls-visible" : "controls-hidden"}`} onMouseMove={showControls} onClick={showControls} onTouchStart={showControls}>
       <video key={`${item.type}-${item.id}-${stream?.url || "empty"}`} ref={videoRef} src={stream?.url || undefined} controls={false} poster={item.background || item.poster} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onWaiting={() => setLoading(true)} onCanPlay={() => setLoading(false)} onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)} onTimeUpdate={(e) => setTime(e.currentTarget.currentTime || 0)}>
         {subtitles.map((sub, i) => <track key={`${sub.url || sub.file}-${i}`} kind="subtitles" src={sub.url || sub.file} srcLang={sub.lang || sub.language || "pl"} label={sub.name || sub.lang || sub.language || `Napisy ${i + 1}`} />)}
       </video>
-      {(loading || !stream?.url) && <div className="loading-overlay"><Loader2 className="spin" /><span>{loading ? "Szukam źródeł..." : "Brak źródeł dla tego tytułu"}</span></div>}
+      {(loading || !stream?.url || retryCountdown !== null || finalNoSources) && <div className="loading-overlay"><Loader2 className={finalNoSources ? "" : "spin"} /><span>{statusText}</span></div>}
       <div className="player-controls glass"><div className="timeline-row"><span>{fmt(time)}</span><input className="timeline" type="range" min="0" max={duration || 0} step="1" value={time} onChange={seek} /><span>{fmt(duration)}</span></div><div className="controls-row"><button onClick={toggle}>{playing ? <Pause /> : <Play />}</button><button title="Poprzedni odcinek"><SkipForward className="flip" /></button><button title="Następny odcinek"><SkipForward /></button><label className="compact-select"><Cog size={18} /><select value={streamIndex} onChange={(e) => setStreamIndex(Number(e.target.value))}>{streams.map((s, i) => <option key={i} value={i}>{s.name || s.title || s.addon || `Stream ${i + 1}`}</option>)}</select></label><label className="compact-select"><Subtitles size={18} /><select value={subtitleIndex} onChange={(e) => setSubtitleIndex(Number(e.target.value))}><option value="-1">Napisy wył.</option>{subtitles.map((s, i) => <option key={i} value={i}>{s.name || s.lang || s.language || `Napisy ${i + 1}`}</option>)}</select></label><label className="speed"><Gauge size={16} /><select onChange={(e) => { if (videoRef.current) videoRef.current.playbackRate = Number(e.target.value); }}><option value="1">1x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="2">2x</option></select></label><button title="Pomiń intro" className="intro">Pomiń intro</button><button onClick={fullscreen}><Maximize /></button></div></div>
     </div>
   </main>;
