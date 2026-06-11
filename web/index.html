@@ -4,6 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Player</title>
+    <style>
+      .danger { border: 0; border-radius: 999px; background: rgba(229,9,20,.16); color: #ffb8b8; padding: 9px 12px; display: inline-flex; align-items: center; gap: 6px; font-weight: 800; }
+      .danger:hover { background: rgba(229,9,20,.28); }
+      .check-list { display: grid; gap: 8px; max-height: 260px; overflow: auto; padding: 8px; border: 1px solid rgba(255,255,255,.08); border-radius: 14px; background: rgba(255,255,255,.04); }
+      .check-list label { display: flex; gap: 8px; align-items: center; color: #ddd; }
+      .check-list input { width: auto; accent-color: #e50914; }
+      .preview-group-title { padding: 8px 10px 2px; color: #e50914; font-weight: 900; font-size: 12px; text-transform: uppercase; letter-spacing: .12em; }
+      .result-scroll { grid-auto-columns: 178px; }
+      .modal-backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: rgba(0,0,0,.72); backdrop-filter: blur(10px); }
+      .modal { width: min(520px, 100%); border-radius: 28px; padding: 28px; text-align: center; }
+      .modal h2 { justify-content: center; font-size: 30px; }
+      .modal p { margin-bottom: 22px; }
+      .panel button:not(.primary):not(.danger):not(.link) { border: 0; border-radius: 999px; background: rgba(255,255,255,.08); color: white; padding: 10px 14px; margin: 6px 6px 0 0; font-weight: 800; }
+      .panel button:not(.primary):not(.danger):not(.link):hover { background: rgba(255,255,255,.14); }
+      .admin h3 { margin-top: 24px; }
+      @media (max-width: 760px) { .modal { padding: 22px; } .check-list { max-height: 210px; } }
+    </style>
   </head>
   <body>
     <div id="root"></div>
