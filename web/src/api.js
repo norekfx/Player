@@ -211,39 +211,44 @@ function switchTo720p() {
   return true;
 }
 
+function loadingOverlay() {
+  return [...document.querySelectorAll(".player-page .loading-overlay")].find((overlay) => /Szukam źródeł|Szukam zrodel|Ładuje film|Laduje film/i.test(overlay.textContent || ""));
+}
+
 function setLoadingFilmText() {
-  if (typeof document === "undefined") return;
-  const video = document.querySelector(".player-page video");
-  const hasStream = Boolean(video?.currentSrc || video?.src || video?.getAttribute("src"));
-  if (!hasStream) return;
-  document.querySelectorAll(".player-page .loading-overlay").forEach((overlay) => {
-    if (/Szukam źródeł|Szukam zrodel/i.test(overlay.textContent || "")) {
-      const span = overlay.querySelector("span");
-      if (span) span.textContent = "Ładuje film...";
-      else overlay.textContent = "Ładuje film...";
-    }
-  });
+  const overlay = loadingOverlay();
+  if (!overlay) return false;
+  const span = overlay.querySelector("span");
+  if (span) span.textContent = "Ładuje film...";
+  else overlay.textContent = "Ładuje film...";
+  return true;
 }
 
 function scanLongBuffering() {
   if (typeof document === "undefined") return;
-  document.querySelectorAll(".player-page video").forEach((video) => {
-    const src = video.currentSrc || video.src || video.getAttribute("src") || "";
-    if (!src) return;
-    setLoadingFilmText();
-    const isBuffering = !video.ended && (video.readyState < 3 || video.networkState === HTMLMediaElement.NETWORK_LOADING) && (video.paused || video.currentTime < 1 || video.waiting);
-    if (!isBuffering) {
-      bufferingState.delete(src);
-      return;
-    }
-    if (!bufferingState.has(src)) bufferingState.set(src, Date.now());
-    const started = bufferingState.get(src);
-    if (Date.now() - started >= BUFFER_SWITCH_MS) {
-      const switched = switchTo720p();
-      bufferingState.delete(src);
-      if (!switched) showPlayerToast("Film długo się buforuje. Nie znaleziono automatycznej opcji 720p dla tego źródła.");
-    }
-  });
+  const page = document.querySelector(".player-page");
+  if (!page) return;
+  const select = streamSelect();
+  const overlayVisible = setLoadingFilmText();
+  const video = page.querySelector("video");
+  const src = video?.currentSrc || video?.src || video?.getAttribute("src") || "";
+  const key = src || selectedOptionText(select) || page.querySelector("h1")?.textContent || "player-buffering";
+  if (!select || !overlayVisible) {
+    bufferingState.delete(key);
+    return;
+  }
+  const timelineReady = video && (Number.isFinite(video.duration) && video.duration > 0 || video.readyState >= 3 || video.currentTime > 1);
+  if (timelineReady && !video.paused) {
+    bufferingState.delete(key);
+    return;
+  }
+  if (!bufferingState.has(key)) bufferingState.set(key, Date.now());
+  const started = bufferingState.get(key);
+  if (Date.now() - started >= BUFFER_SWITCH_MS) {
+    const switched = switchTo720p();
+    bufferingState.delete(key);
+    if (!switched) showPlayerToast("Film długo się buforuje. Nie znaleziono automatycznej opcji 720p dla tego źródła.");
+  }
 }
 
 let hlsScriptPromise = null;
