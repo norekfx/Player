@@ -217,118 +217,107 @@
     </script>
     <script>
       (() => {
-        const BAD_AUDIO = /(\bAC[- ]?3\b|\bE[- ]?AC[- ]?3\b|\bEAC3\b|\bDTS\b|\bTRUEHD\b|\bAC3\b)/i;
-        const GOOD_AUDIO = /(\bAAC\b|\bMP3\b|\bOPUS\b|\bVORBIS\b|\bMP4A\b)/i;
-        const CHECK_KEY = 'player_audio_stream_checked_v1';
-        function getChecked() { try { return JSON.parse(sessionStorage.getItem(CHECK_KEY) || '{}'); } catch { return {}; } }
-        function setChecked(key) { const data = getChecked(); data[key] = Date.now(); sessionStorage.setItem(CHECK_KEY, JSON.stringify(data)); }
+        const BAD_AUDIO = /(AC[- ]?3|E[- ]?AC[- ]?3|EAC3|DTS|TRUEHD|AC3|audio\s*AC3\?)/i;
+        const FALLBACK_KEY = 'player_audio_720_fallback_v2';
+        let lastDecodedAudio = new WeakMap();
+        let lastHandledKey = '';
+        function getSeen() { try { return JSON.parse(sessionStorage.getItem(FALLBACK_KEY) || '{}'); } catch { return {}; } }
+        function setSeen(key) { const seen = getSeen(); seen[key] = Date.now(); sessionStorage.setItem(FALLBACK_KEY, JSON.stringify(seen)); }
         function streamSelect() {
           return [...document.querySelectorAll('.player-page .compact-select select')].find((select) => {
             const text = [...select.options].map(o => o.textContent || '').join(' ');
-            return select.options.length > 1 && (/Torrentio|BluRay|WEB|Stream|AC[- ]?3|EAC3|AAC|DTS|HEVC|H264/i.test(text));
+            return select.options.length > 1 && (/720|1080|4k|auto|oryginał|oryginal|original|source|Torrentio|BluRay|WEB|Stream|AC[- ]?3|EAC3|DTS/i.test(text));
           });
         }
-        function playerKey(select) {
-          const title = document.querySelector('.player-page h1')?.textContent?.trim() || 'unknown';
-          return title + '|' + (select?.value || '') + '|' + ([...(select?.options || [])].find(o => o.selected)?.textContent || '');
+        function selectedOption(select) {
+          return select ? ([...select.options].find((o) => o.selected) || select.options[Number(select.value)] || select.options[0]) : null;
         }
-        function showWarning(message) {
-          let toast = document.querySelector('.toast.audio-codec-toast');
-          if (!toast) { toast = document.createElement('div'); toast.className = 'toast audio-codec-toast'; document.body.appendChild(toast); }
-          toast.textContent = message;
-          setTimeout(() => { if (toast.isConnected && toast.textContent === message) toast.remove(); }, 7000);
-        }
-        function chooseCompatibleStream(reason = 'codec') {
-          const select = streamSelect();
-          if (!select) return;
-          const options = [...select.options];
-          const selected = options.find(o => o.selected) || options[Number(select.value)] || options[0];
-          const selectedText = selected?.textContent || '';
-          const key = playerKey(select) + '|' + reason;
-          if (getChecked()[key]) return;
-          if (!BAD_AUDIO.test(selectedText) && reason !== 'silent-audio') return;
-          setChecked(key);
-          const candidate = options.find(o => GOOD_AUDIO.test(o.textContent || '') && !BAD_AUDIO.test(o.textContent || ''));
-          if (candidate && candidate.value !== select.value) {
-            select.value = candidate.value;
-            select.dispatchEvent(new Event('change', { bubbles: true }));
-            showWarning('Ten stream może mieć nieobsługiwany dźwięk w przeglądarce. Automatycznie zmieniono jakość na źródło z bardziej zgodnym audio.');
-          } else {
-            showWarning('Ten stream może mieć obraz bez dźwięku, bo używa AC-3/EAC3/DTS. Zmień jakość na AAC/MP3/Opus, jeśli jest dostępna.');
-          }
-        }
-        function checkSilentAudio() {
-          const video = document.querySelector('.player-page video');
-          if (!video || !video.currentSrc || video.paused || video.currentTime < 4) return;
-          if ('webkitAudioDecodedByteCount' in video && video.webkitAudioDecodedByteCount === 0) chooseCompatibleStream('silent-audio');
-        }
-        const observer = new MutationObserver(() => chooseCompatibleStream('codec'));
-        observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-        setInterval(() => { chooseCompatibleStream('codec'); checkSilentAudio(); }, 2500);
-      })();
-    </script>
-    <script>
-      (() => {
-        const BAD_AUDIO = /(AC[- ]?3|E[- ]?AC[- ]?3|EAC3|DTS|TRUEHD|AC3)/i;
-        const POPUP_KEY = 'player_audio_codec_popup_seen_v1';
-        function getSeen() { try { return JSON.parse(sessionStorage.getItem(POPUP_KEY) || '{}'); } catch { return {}; } }
-        function setSeen(key) { const seen = getSeen(); seen[key] = Date.now(); sessionStorage.setItem(POPUP_KEY, JSON.stringify(seen)); }
-        function getSelectedStreamText() {
-          const selects = [...document.querySelectorAll('.player-page .compact-select select')];
-          const select = selects.find((s) => [...s.options].some((o) => BAD_AUDIO.test(o.textContent || '') || /Torrentio|BluRay|WEB|Stream/i.test(o.textContent || '')));
-          const option = select ? ([...select.options].find((o) => o.selected) || select.options[Number(select.value)] || select.options[0]) : null;
-          return { select, option, text: option?.textContent || '' };
-        }
-        function detectCodec(text) {
-          const match = String(text || '').match(BAD_AUDIO);
-          if (!match) return '';
-          const raw = match[1].toUpperCase().replace(/\s+/g, '-');
-          if (raw === 'AC3') return 'AC-3';
-          if (raw === 'EAC3' || raw === 'E-AC-3') return 'EAC3';
-          return raw;
-        }
-        function currentStreamUrl() {
+        function currentTitle() { return document.querySelector('.player-page h1')?.textContent?.trim() || 'unknown'; }
+        function currentUrl() {
           const video = document.querySelector('.player-page video');
           return video?.currentSrc || video?.src || '';
         }
-        function popupKey(codec, text) {
-          const title = document.querySelector('.player-page h1')?.textContent?.trim() || 'unknown';
-          return `${title}|${codec}|${text.slice(0, 120)}`;
+        function find720(select) {
+          return [...(select?.options || [])].find((o) => /(^|[^0-9])720\s*p?([^0-9]|$)/i.test(o.textContent || ''));
         }
-        function closePopup() { document.querySelector('.audio-codec-modal')?.remove(); }
-        function showPopup(codec, text) {
-          const key = popupKey(codec, text);
-          if (getSeen()[key] || document.querySelector('.audio-codec-modal')) return;
-          setSeen(key);
-          const url = currentStreamUrl();
+        function isProbablyOriginal(text) {
+          return /(oryginał|oryginal|original|source|audio\s*AC3\?|AC[- ]?3|EAC3|DTS|TRUEHD)/i.test(text || '');
+        }
+        function closePopup() { document.querySelector('.audio-fallback-modal')?.remove(); }
+        function openExternal(url) {
+          if (!url) return;
+          window.open(url, '_blank', 'noopener,noreferrer');
+        }
+        function downloadUrl(url) {
+          if (!url) return;
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = '';
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        }
+        function showFallbackPopup(originalUrl, originalName, switched) {
+          if (document.querySelector('.audio-fallback-modal')) return;
           const backdrop = document.createElement('div');
-          backdrop.className = 'modal-backdrop audio-codec-modal';
+          backdrop.className = 'modal-backdrop audio-fallback-modal';
           backdrop.innerHTML = `
             <div class="modal glass">
               <h2>Możliwy problem z dźwiękiem</h2>
-              <p>Wykryto kodek audio <strong>${codec}</strong>. Przeglądarka może nie odtworzyć dźwięku dla tego źródła.</p>
-              <p>Możesz też spróbować zmienić jakość w odtwarzaczu. Wideo może wtedy nie być płynne albo może mieć gorszą jakość. Wyższe jakości mogą ładować się dłużej, ponieważ są transkodowane.</p>
-              <p>Alternatywnie możesz pobrać film i odtworzyć go w zewnętrznym odtwarzaczu.</p>
+              <p>Ten typ audio jest prawdopodobnie nieobsługiwany przez przeglądarkę. ${switched ? 'Z tego powodu automatycznie przełączono na transkodowaną wersję 720p.' : 'Nie znaleziono automatycznie wersji 720p do przełączenia.'}</p>
+              <p>Jeśli chcesz oglądać w wyższej jakości, możesz pobrać oryginalne wideo albo otworzyć je w odtwarzaczu systemowym.</p>
+              ${originalName ? `<p><small>Oryginalne źródło: ${originalName}</small></p>` : ''}
               <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
-                <button class="primary audio-codec-close" type="button">Zamknij</button>
-                <button class="danger audio-codec-download" type="button">Pobierz</button>
+                <button class="danger audio-download" type="button">Pobierz</button>
+                <button class="primary audio-system" type="button">Odtwarzaj w odtwarzaczu systemowym</button>
+                <button class="audio-close" type="button">Zamknij</button>
               </div>
             </div>`;
-          backdrop.querySelector('.audio-codec-close').addEventListener('click', closePopup);
-          backdrop.querySelector('.audio-codec-download').addEventListener('click', () => {
-            if (url) window.open(url, '_blank', 'noopener,noreferrer');
-            closePopup();
-          });
+          backdrop.querySelector('.audio-close').addEventListener('click', closePopup);
+          backdrop.querySelector('.audio-download').addEventListener('click', () => downloadUrl(originalUrl));
+          backdrop.querySelector('.audio-system').addEventListener('click', () => openExternal(originalUrl));
           document.body.appendChild(backdrop);
         }
-        function check() {
-          const { text } = getSelectedStreamText();
-          const codec = detectCodec(text);
-          if (codec) showPopup(codec, text);
+        function switchTo720AndShow(reason) {
+          const select = streamSelect();
+          if (!select) return;
+          const option = selectedOption(select);
+          const originalName = option?.textContent || '';
+          const originalUrl = currentUrl();
+          const key = `${currentTitle()}|${select.value}|${originalName}|${reason}`;
+          if (getSeen()[key] || key === lastHandledKey) return;
+          const candidate = find720(select);
+          if (!candidate && !isProbablyOriginal(originalName) && reason !== 'silent-audio') return;
+          lastHandledKey = key;
+          setSeen(key);
+          let switched = false;
+          if (candidate && candidate.value !== select.value) {
+            select.value = candidate.value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            switched = true;
+          }
+          showFallbackPopup(originalUrl, originalName, switched);
         }
-        const observer = new MutationObserver(check);
+        function checkCodecName() {
+          const select = streamSelect();
+          const option = selectedOption(select);
+          const text = option?.textContent || '';
+          if (BAD_AUDIO.test(text) || isProbablyOriginal(text)) switchTo720AndShow('codec-name');
+        }
+        function checkSilentAudio() {
+          const video = document.querySelector('.player-page video');
+          if (!video || !video.currentSrc || video.paused || video.currentTime < 5) return;
+          if (!('webkitAudioDecodedByteCount' in video)) return;
+          const previous = lastDecodedAudio.get(video) ?? video.webkitAudioDecodedByteCount;
+          const current = video.webkitAudioDecodedByteCount;
+          lastDecodedAudio.set(video, current);
+          if (current === 0 || (current === previous && video.currentTime > 8)) switchTo720AndShow('silent-audio');
+        }
+        const observer = new MutationObserver(checkCodecName);
         observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-        setInterval(check, 2000);
+        setInterval(() => { checkCodecName(); checkSilentAudio(); }, 2500);
       })();
     </script>
   </body>
