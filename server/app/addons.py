@@ -64,6 +64,16 @@ def detect_container(stream: dict) -> str:
     return ""
 
 
+def is_original_stream(stream: dict) -> bool:
+    text = stream_text(stream).lower()
+    return bool(re.search(r"(^|[^a-ząćęłńóśźż0-9])(oryginał|oryginal|original|source)([^a-ząćęłńóśźż0-9]|$)", text, flags=re.I))
+
+
+def is_transcoded_stream(stream: dict) -> bool:
+    text = stream_text(stream).lower()
+    return bool(re.search(r"(^|[^a-z0-9])(auto|transcoded|transkod|4k|2160p|1440p|1080p|720p|480p|360p)([^a-z0-9]|$)", text, flags=re.I)) and not is_original_stream(stream)
+
+
 def detect_audio_codec(stream: dict) -> str:
     text = stream_text(stream).lower()
     checks = [
@@ -78,27 +88,34 @@ def detect_audio_codec(stream: dict) -> str:
     for pattern, codec in checks:
         if re.search(pattern, text):
             return codec
+    if is_original_stream(stream):
+        return "unknown-original"
+    if is_transcoded_stream(stream):
+        return "aac"
     return ""
 
 
 def is_browser_audio_risky(stream: dict) -> bool:
-    return detect_audio_codec(stream) in {"ac3", "eac3", "dts"}
+    return detect_audio_codec(stream) in {"ac3", "eac3", "dts", "unknown-original"}
 
 
 def browser_audio_score(stream: dict) -> int:
     codec = detect_audio_codec(stream)
     container = detect_container(stream)
-    if codec in {"aac", "mp3", "opus", "vorbis"}:
+    quality = detect_quality(stream).lower()
+    if codec in {"aac", "mp3", "opus", "vorbis"} and quality == "720p":
         return 0
-    if container in {"mp4", "m4v", "webm"} and codec not in {"ac3", "eac3", "dts"}:
+    if codec in {"aac", "mp3", "opus", "vorbis"}:
         return 1
-    if not codec and container not in {"mkv"}:
+    if container in {"mp4", "m4v", "webm"} and codec not in {"ac3", "eac3", "dts", "unknown-original"}:
         return 2
-    if codec in {"ac3", "eac3", "dts"}:
+    if not codec and container not in {"mkv"}:
+        return 3
+    if codec in {"ac3", "eac3", "dts", "unknown-original"}:
         return 10
     if container == "mkv":
         return 6
-    return 3
+    return 4
 
 
 def quality_score(stream: dict) -> int:
@@ -126,14 +143,20 @@ def normalize_stream(stream: dict) -> dict:
     if container:
         normalized["container"] = container
     normalized["browser_audio_risky"] = is_browser_audio_risky(normalized)
+    normalized["transcoded"] = is_transcoded_stream(normalized)
+    normalized["original_stream"] = is_original_stream(normalized)
     hints = normalized.get("behaviorHints") or {}
     raw_label = normalized.get("name") or normalized.get("title") or hints.get("filename") or quality
     label = normalize_stream_label(raw_label)
     if quality and quality.lower() not in label.lower():
         label = f"{quality} {label}".strip()
-    if audio_codec in {"ac3", "eac3", "dts"} and "ryzykowny audio" not in label.lower():
+    if audio_codec in {"ac3", "eac3", "dts"} and "audio" not in label.lower():
         label = f"⚠ audio {audio_codec.upper()} • {label}".strip()
-    elif audio_codec and audio_codec.upper() not in label.upper():
+    elif audio_codec == "unknown-original" and "audio" not in label.lower():
+        # Frontend ma już wykrywanie po AC3/EAC3/DTS. Dopisujemy AC3 do oryginału,
+        # bo przy addonach transkodujących oryginał często jest MKV z audio nieobsługiwanym przez przeglądarkę.
+        label = f"⚠ audio AC3? • {label}".strip()
+    elif audio_codec and audio_codec != "unknown-original" and audio_codec.upper() not in label.upper():
         label = f"{audio_codec.upper()} • {label}".strip()
     if label:
         normalized["name"] = label
