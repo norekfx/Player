@@ -3,6 +3,10 @@ const UI_KEY = "player_ui_state_v1";
 const LIMIT_VIEW_KEY = "player_limit_exhausted_view_v1";
 const HLS_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/hls.js@1.5.20/dist/hls.min.js";
 const SILENT_AUDIO_POPUP_KEY = "player_silent_audio_popup_seen_v1";
+const BUFFER_POPUP_KEY = "player_buffering_popup_seen_v1";
+const BUFFER_SWITCH_MS = 15000;
+
+const bufferingState = new Map();
 
 export function getToken() {
   return localStorage.getItem("player_token");
@@ -14,6 +18,7 @@ export function setSession(token, profile) {
   localStorage.removeItem(UI_KEY);
   sessionStorage.removeItem(LIMIT_VIEW_KEY);
   sessionStorage.removeItem(SILENT_AUDIO_POPUP_KEY);
+  sessionStorage.removeItem(BUFFER_POPUP_KEY);
   sessionStorage.setItem("player_just_logged_in", "1");
   if (typeof window !== "undefined") {
     window.location.replace(window.location.pathname || "/");
@@ -26,6 +31,7 @@ export function clearSession() {
   localStorage.removeItem(UI_KEY);
   sessionStorage.removeItem(LIMIT_VIEW_KEY);
   sessionStorage.removeItem(SILENT_AUDIO_POPUP_KEY);
+  sessionStorage.removeItem(BUFFER_POPUP_KEY);
 }
 
 export function getProfile() {
@@ -144,6 +150,102 @@ function showSilentAudioPopup(reason = "Nie udało się wykryć dekodowanego dź
   document.body.appendChild(backdrop);
 }
 
+function getBufferSeen() {
+  try { return JSON.parse(sessionStorage.getItem(BUFFER_POPUP_KEY) || "{}"); } catch { return {}; }
+}
+
+function markBufferSeen(key) {
+  try {
+    const seen = getBufferSeen();
+    seen[key] = Date.now();
+    sessionStorage.setItem(BUFFER_POPUP_KEY, JSON.stringify(seen));
+  } catch {}
+}
+
+function closeBufferPopup() {
+  document.querySelector(".buffering-modal")?.remove();
+}
+
+function showBufferingPopup() {
+  if (typeof document === "undefined") return;
+  const key = currentStreamUrl() || currentStreamText();
+  const seen = getBufferSeen();
+  if (!key || seen[key] || document.querySelector(".buffering-modal")) return;
+  markBufferSeen(key);
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop buffering-modal";
+  backdrop.innerHTML = `
+    <div class="modal glass">
+      <h2>Przełączono jakość</h2>
+      <p>Z powodu długiego buforowania przełączono na 720p.</p>
+      <p>Niższa jakość może uruchomić się szybciej i działać płynniej.</p>
+      <button class="primary buffering-close" type="button">Zamknij</button>
+    </div>`;
+  backdrop.querySelector(".buffering-close").addEventListener("click", closeBufferPopup);
+  document.body.appendChild(backdrop);
+}
+
+function streamSelect() {
+  return [...document.querySelectorAll(".player-page .compact-select select")].find((select) => {
+    const text = [...select.options].map((option) => option.textContent || "").join(" ");
+    return select.options.length > 1 && (/720|1080|2160|4k|stream|torrentio|webrip|bluray|hls|cda/i.test(text));
+  });
+}
+
+function selectedOptionText(select) {
+  const option = select ? ([...select.options].find((item) => item.selected) || select.options[Number(select.value)] || select.options[0]) : null;
+  return option?.textContent || "";
+}
+
+function switchTo720p() {
+  const select = streamSelect();
+  if (!select) return false;
+  const currentText = selectedOptionText(select);
+  if (/720/i.test(currentText)) return false;
+  const options = [...select.options];
+  const candidate = options.find((option) => /(^|[^0-9])720(p)?([^0-9]|$)/i.test(option.textContent || ""));
+  if (!candidate || candidate.value === select.value) return false;
+  select.value = candidate.value;
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+  showBufferingPopup();
+  return true;
+}
+
+function setLoadingFilmText() {
+  if (typeof document === "undefined") return;
+  const video = document.querySelector(".player-page video");
+  const hasStream = Boolean(video?.currentSrc || video?.src || video?.getAttribute("src"));
+  if (!hasStream) return;
+  document.querySelectorAll(".player-page .loading-overlay").forEach((overlay) => {
+    if (/Szukam źródeł|Szukam zrodel/i.test(overlay.textContent || "")) {
+      const span = overlay.querySelector("span");
+      if (span) span.textContent = "Ładuje film...";
+      else overlay.textContent = "Ładuje film...";
+    }
+  });
+}
+
+function scanLongBuffering() {
+  if (typeof document === "undefined") return;
+  document.querySelectorAll(".player-page video").forEach((video) => {
+    const src = video.currentSrc || video.src || video.getAttribute("src") || "";
+    if (!src) return;
+    setLoadingFilmText();
+    const isBuffering = !video.ended && (video.readyState < 3 || video.networkState === HTMLMediaElement.NETWORK_LOADING) && (video.paused || video.currentTime < 1 || video.waiting);
+    if (!isBuffering) {
+      bufferingState.delete(src);
+      return;
+    }
+    if (!bufferingState.has(src)) bufferingState.set(src, Date.now());
+    const started = bufferingState.get(src);
+    if (Date.now() - started >= BUFFER_SWITCH_MS) {
+      const switched = switchTo720p();
+      bufferingState.delete(src);
+      if (!switched) showPlayerToast("Film długo się buforuje. Nie znaleziono automatycznej opcji 720p dla tego źródła.");
+    }
+  });
+}
+
 let hlsScriptPromise = null;
 function loadHlsScript() {
   if (typeof window === "undefined") return Promise.reject(new Error("No window"));
@@ -207,9 +309,9 @@ function scanSilentAudio() {
 if (typeof window !== "undefined") {
   const shouldShowLimitView = () => sessionStorage.getItem(LIMIT_VIEW_KEY) === "1" || profileLimitExhausted();
   const enforceLimitView = () => { if (shouldShowLimitView()) showLimitExhaustedPlayerView(); };
-  const observer = new MutationObserver(() => { enforceLimitView(); scanHlsVideos(); scanSilentAudio(); });
+  const observer = new MutationObserver(() => { enforceLimitView(); scanHlsVideos(); scanSilentAudio(); scanLongBuffering(); });
   observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["src"] });
-  setInterval(() => { enforceLimitView(); scanHlsVideos(); scanSilentAudio(); }, 1000);
+  setInterval(() => { enforceLimitView(); scanHlsVideos(); scanSilentAudio(); scanLongBuffering(); }, 1000);
 }
 
 async function assertGuestCanRequestStreams(token) {
