@@ -307,5 +307,169 @@
         setInterval(checkSilentAudio, 2500);
       })();
     </script>
+    <script>
+      (() => {
+        const LIVE_HLS_KEY = Symbol('playerLiveHlsPatched');
+        let lastVideo = null;
+        let lastSrc = '';
+        let lastTime = 0;
+        let lastMoveAt = Date.now();
+
+        function ensureStyles() {
+          if (document.getElementById('live-hls-transcoding-style')) return;
+          const style = document.createElement('style');
+          style.id = 'live-hls-transcoding-style';
+          style.textContent = `
+            .live-hls-transcoding-overlay {
+              position: fixed;
+              left: 50%;
+              bottom: 96px;
+              transform: translateX(-50%);
+              z-index: 90;
+              display: none;
+              align-items: center;
+              gap: 10px;
+              padding: 12px 16px;
+              border-radius: 999px;
+              background: rgba(0,0,0,.78);
+              color: white;
+              font-weight: 900;
+              box-shadow: 0 14px 40px rgba(0,0,0,.35);
+              backdrop-filter: blur(10px);
+            }
+            .live-hls-transcoding-overlay.visible { display: inline-flex; }
+            .live-hls-spinner {
+              width: 18px;
+              height: 18px;
+              border: 3px solid rgba(255,255,255,.25);
+              border-top-color: white;
+              border-radius: 50%;
+              animation: liveHlsSpin .8s linear infinite;
+            }
+            @keyframes liveHlsSpin { to { transform: rotate(360deg); } }
+          `;
+          document.head.appendChild(style);
+        }
+
+        function overlay() {
+          ensureStyles();
+          let node = document.querySelector('.live-hls-transcoding-overlay');
+          if (!node) {
+            node = document.createElement('div');
+            node.className = 'live-hls-transcoding-overlay';
+            node.innerHTML = '<span class="live-hls-spinner"></span><span>transkodowanie...</span>';
+            document.body.appendChild(node);
+          }
+          return node;
+        }
+
+        function showOverlay(show) {
+          overlay().classList.toggle('visible', Boolean(show));
+        }
+
+        function isFinitePositive(value) {
+          return Number.isFinite(value) && value > 0;
+        }
+
+        function isLiveHls(video) {
+          if (!video) return false;
+          const src = video.currentSrc || video.src || '';
+          return /\.m3u8(\?|#|$)/i.test(src) || !Number.isFinite(video.duration) || Number.isNaN(video.duration);
+        }
+
+        function seekableStart(video) {
+          try { return video.seekable.length ? video.seekable.start(0) : 0; } catch { return 0; }
+        }
+
+        function seekableEnd(video) {
+          try { return video.seekable.length ? video.seekable.end(video.seekable.length - 1) : video.currentTime; } catch { return video.currentTime; }
+        }
+
+        function startFromBeginningOfLiveWindow(video) {
+          if (!isLiveHls(video)) return;
+          const start = seekableStart(video);
+          const end = seekableEnd(video);
+          if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return;
+          if (!isFinitePositive(video.currentTime) || video.currentTime > start + 5 || video.currentTime >= end - 1) {
+            try { video.currentTime = start; } catch {}
+          }
+        }
+
+        function fixTimeLabels() {
+          const root = document.querySelector('.player-page') || document.body;
+          if (!root) return;
+          const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+          const nodes = [];
+          while (walker.nextNode()) nodes.push(walker.currentNode);
+          nodes.forEach((node) => {
+            const value = node.nodeValue || '';
+            if (/Infinity|NaN/i.test(value)) {
+              node.nodeValue = value.replace(/\s*Infinity\s*:?\s*NaN\s*:?\s*NaN/ig, ' transkodowanie...').replace(/Infinity|NaN/ig, 'transkodowanie...');
+            }
+          });
+        }
+
+        function patchVideo(video) {
+          if (!video || video[LIVE_HLS_KEY]) return;
+          video[LIVE_HLS_KEY] = true;
+          video.addEventListener('loadedmetadata', () => setTimeout(() => startFromBeginningOfLiveWindow(video), 120));
+          video.addEventListener('durationchange', fixTimeLabels);
+          video.addEventListener('timeupdate', () => {
+            if (Math.abs(video.currentTime - lastTime) > .2) {
+              lastTime = video.currentTime;
+              lastMoveAt = Date.now();
+              showOverlay(false);
+            }
+            fixTimeLabels();
+          });
+          video.addEventListener('waiting', () => { if (isLiveHls(video)) showOverlay(true); });
+          video.addEventListener('stalled', () => { if (isLiveHls(video)) showOverlay(true); });
+          video.addEventListener('canplay', () => showOverlay(false));
+          video.addEventListener('playing', () => showOverlay(false));
+          video.addEventListener('ended', (event) => {
+            if (!isLiveHls(video)) return;
+            event.preventDefault();
+            showOverlay(true);
+            const end = seekableEnd(video);
+            if (Number.isFinite(end) && end > video.currentTime + .4) {
+              try { video.currentTime = Math.max(seekableStart(video), video.currentTime - .2); } catch {}
+              video.play?.().catch?.(() => {});
+            } else {
+              setTimeout(() => video.load?.(), 1000);
+            }
+          });
+        }
+
+        function tick() {
+          const video = document.querySelector('.player-page video');
+          if (!video) { showOverlay(false); return; }
+          patchVideo(video);
+          const src = video.currentSrc || video.src || '';
+          if (video !== lastVideo || src !== lastSrc) {
+            lastVideo = video;
+            lastSrc = src;
+            lastTime = video.currentTime || 0;
+            lastMoveAt = Date.now();
+            setTimeout(() => startFromBeginningOfLiveWindow(video), 250);
+          }
+          if (!isLiveHls(video)) { showOverlay(false); return; }
+          fixTimeLabels();
+          const stuck = !video.paused && !video.ended && video.currentTime > 1 && Date.now() - lastMoveAt > 4500;
+          const waitingForSegments = video.readyState < 3 || stuck || video.ended;
+          showOverlay(waitingForSegments);
+          if (video.ended || stuck) {
+            const end = seekableEnd(video);
+            if (Number.isFinite(end) && end > video.currentTime + .6) {
+              try { video.currentTime = Math.max(seekableStart(video), video.currentTime - .2); } catch {}
+              video.play?.().catch?.(() => {});
+            }
+          }
+        }
+
+        const observer = new MutationObserver(() => { fixTimeLabels(); tick(); });
+        observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+        setInterval(tick, 1000);
+      })();
+    </script>
   </body>
 </html>
