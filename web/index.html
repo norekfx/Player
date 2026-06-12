@@ -217,8 +217,7 @@
     </script>
     <script>
       (() => {
-        const BAD_AUDIO = /(AC[- ]?3|E[- ]?AC[- ]?3|EAC3|DTS|TRUEHD|AC3|audio\s*AC3\?)/i;
-        const FALLBACK_KEY = 'player_audio_720_fallback_v2';
+        const FALLBACK_KEY = 'player_audio_720_fallback_v3';
         let lastDecodedAudio = new WeakMap();
         let lastHandledKey = '';
         function getSeen() { try { return JSON.parse(sessionStorage.getItem(FALLBACK_KEY) || '{}'); } catch { return {}; } }
@@ -226,7 +225,7 @@
         function streamSelect() {
           return [...document.querySelectorAll('.player-page .compact-select select')].find((select) => {
             const text = [...select.options].map(o => o.textContent || '').join(' ');
-            return select.options.length > 1 && (/720|1080|4k|auto|oryginał|oryginal|original|source|Torrentio|BluRay|WEB|Stream|AC[- ]?3|EAC3|DTS/i.test(text));
+            return select.options.length > 1 && (/720|1080|4k|auto|oryginał|oryginal|original|source|Torrentio|BluRay|WEB|Stream/i.test(text));
           });
         }
         function selectedOption(select) {
@@ -239,9 +238,6 @@
         }
         function find720(select) {
           return [...(select?.options || [])].find((o) => /(^|[^0-9])720\s*p?([^0-9]|$)/i.test(o.textContent || ''));
-        }
-        function isProbablyOriginal(text) {
-          return /(oryginał|oryginal|original|source|audio\s*AC3\?|AC[- ]?3|EAC3|DTS|TRUEHD)/i.test(text || '');
         }
         function closePopup() { document.querySelector('.audio-fallback-modal')?.remove(); }
         function openExternal(url) {
@@ -266,7 +262,7 @@
           backdrop.innerHTML = `
             <div class="modal glass">
               <h2>Możliwy problem z dźwiękiem</h2>
-              <p>Ten typ audio jest prawdopodobnie nieobsługiwany przez przeglądarkę. ${switched ? 'Z tego powodu automatycznie przełączono na transkodowaną wersję 720p.' : 'Nie znaleziono automatycznie wersji 720p do przełączenia.'}</p>
+              <p>Przeglądarka nie dekoduje dźwięku z tego źródła. ${switched ? 'Z tego powodu automatycznie przełączono na transkodowaną wersję 720p.' : 'Nie znaleziono automatycznie wersji 720p do przełączenia.'}</p>
               <p>Jeśli chcesz oglądać w wyższej jakości, możesz pobrać oryginalne wideo albo otworzyć je w odtwarzaczu systemowym.</p>
               ${originalName ? `<p><small>Oryginalne źródło: ${originalName}</small></p>` : ''}
               <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
@@ -288,10 +284,9 @@
           const originalUrl = currentUrl();
           const key = `${currentTitle()}|${select.value}|${originalName}|${reason}`;
           if (getSeen()[key] || key === lastHandledKey) return;
-          const candidate = find720(select);
-          if (!candidate && !isProbablyOriginal(originalName) && reason !== 'silent-audio') return;
           lastHandledKey = key;
           setSeen(key);
+          const candidate = find720(select);
           let switched = false;
           if (candidate && candidate.value !== select.value) {
             select.value = candidate.value;
@@ -300,24 +295,16 @@
           }
           showFallbackPopup(originalUrl, originalName, switched);
         }
-        function checkCodecName() {
-          const select = streamSelect();
-          const option = selectedOption(select);
-          const text = option?.textContent || '';
-          if (BAD_AUDIO.test(text) || isProbablyOriginal(text)) switchTo720AndShow('codec-name');
-        }
         function checkSilentAudio() {
           const video = document.querySelector('.player-page video');
-          if (!video || !video.currentSrc || video.paused || video.currentTime < 5) return;
+          if (!video || !video.currentSrc || video.paused || video.currentTime < 8) return;
           if (!('webkitAudioDecodedByteCount' in video)) return;
           const previous = lastDecodedAudio.get(video) ?? video.webkitAudioDecodedByteCount;
           const current = video.webkitAudioDecodedByteCount;
           lastDecodedAudio.set(video, current);
-          if (current === 0 || (current === previous && video.currentTime > 8)) switchTo720AndShow('silent-audio');
+          if (current === 0 || (current === previous && video.currentTime > 12)) switchTo720AndShow('silent-audio');
         }
-        const observer = new MutationObserver(checkCodecName);
-        observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
-        setInterval(() => { checkCodecName(); checkSilentAudio(); }, 2500);
+        setInterval(checkSilentAudio, 2500);
       })();
     </script>
   </body>
