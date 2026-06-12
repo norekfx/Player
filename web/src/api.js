@@ -2,6 +2,7 @@ const API_BASE = "/api";
 const UI_KEY = "player_ui_state_v1";
 const LIMIT_VIEW_KEY = "player_limit_exhausted_view_v1";
 const HLS_SCRIPT_URL = "https://cdn.jsdelivr.net/npm/hls.js@1.5.20/dist/hls.min.js";
+const SILENT_AUDIO_POPUP_KEY = "player_silent_audio_popup_seen_v1";
 
 export function getToken() {
   return localStorage.getItem("player_token");
@@ -12,6 +13,7 @@ export function setSession(token, profile) {
   localStorage.setItem("player_profile", JSON.stringify(profile));
   localStorage.removeItem(UI_KEY);
   sessionStorage.removeItem(LIMIT_VIEW_KEY);
+  sessionStorage.removeItem(SILENT_AUDIO_POPUP_KEY);
   sessionStorage.setItem("player_just_logged_in", "1");
   if (typeof window !== "undefined") {
     window.location.replace(window.location.pathname || "/");
@@ -23,6 +25,7 @@ export function clearSession() {
   localStorage.removeItem("player_profile");
   localStorage.removeItem(UI_KEY);
   sessionStorage.removeItem(LIMIT_VIEW_KEY);
+  sessionStorage.removeItem(SILENT_AUDIO_POPUP_KEY);
 }
 
 export function getProfile() {
@@ -86,6 +89,61 @@ function isHlsUrl(url) {
   return /\.m3u8(\?|#|$)/i.test(String(url || ""));
 }
 
+function currentStreamText() {
+  const select = [...document.querySelectorAll(".player-page .compact-select select")].find((item) => item.options?.length > 1);
+  const option = select ? ([...select.options].find((item) => item.selected) || select.options[Number(select.value)] || select.options[0]) : null;
+  return option?.textContent || document.querySelector(".player-page h1")?.textContent || "aktualny stream";
+}
+
+function currentStreamUrl() {
+  const video = document.querySelector(".player-page video");
+  return video?.currentSrc || video?.src || video?.getAttribute("src") || "";
+}
+
+function popupSeen(key) {
+  try { return JSON.parse(sessionStorage.getItem(SILENT_AUDIO_POPUP_KEY) || "{}")[key]; } catch { return false; }
+}
+
+function markPopupSeen(key) {
+  try {
+    const seen = JSON.parse(sessionStorage.getItem(SILENT_AUDIO_POPUP_KEY) || "{}");
+    seen[key] = Date.now();
+    sessionStorage.setItem(SILENT_AUDIO_POPUP_KEY, JSON.stringify(seen));
+  } catch {}
+}
+
+function closeAudioPopup() {
+  document.querySelector(".silent-audio-modal")?.remove();
+}
+
+function showSilentAudioPopup(reason = "Nie udało się wykryć dekodowanego dźwięku") {
+  if (typeof document === "undefined") return;
+  const url = currentStreamUrl();
+  const text = currentStreamText();
+  const key = `${url}|${text}`.slice(0, 260);
+  if (!url || popupSeen(key) || document.querySelector(".silent-audio-modal")) return;
+  markPopupSeen(key);
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop silent-audio-modal";
+  backdrop.innerHTML = `
+    <div class="modal glass">
+      <h2>Możliwy problem z dźwiękiem</h2>
+      <p>${reason}. Film może mieć kodek audio, którego przeglądarka nie obsługuje, nawet jeśli nazwa streamu nie pokazuje kodeka.</p>
+      <p>Możesz spróbować zmienić jakość w odtwarzaczu. Wideo może wtedy nie być płynne albo może mieć gorszą jakość. Wyższe jakości mogą ładować się dłużej, ponieważ są transkodowane.</p>
+      <p>Alternatywnie możesz pobrać film i odtworzyć go w zewnętrznym odtwarzaczu.</p>
+      <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
+        <button class="primary silent-audio-close" type="button">Zamknij</button>
+        <button class="danger silent-audio-download" type="button">Pobierz</button>
+      </div>
+    </div>`;
+  backdrop.querySelector(".silent-audio-close").addEventListener("click", closeAudioPopup);
+  backdrop.querySelector(".silent-audio-download").addEventListener("click", () => {
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
+    closeAudioPopup();
+  });
+  document.body.appendChild(backdrop);
+}
+
 let hlsScriptPromise = null;
 function loadHlsScript() {
   if (typeof window === "undefined") return Promise.reject(new Error("No window"));
@@ -134,12 +192,24 @@ function scanHlsVideos() {
   document.querySelectorAll("video").forEach((video) => attachHlsIfNeeded(video));
 }
 
+function scanSilentAudio() {
+  if (typeof document === "undefined") return;
+  document.querySelectorAll(".player-page video").forEach((video) => {
+    if (!video.currentSrc && !video.src) return;
+    if (video.paused || video.currentTime < 7 || video.readyState < 2) return;
+    if (video.muted || video.volume === 0) return;
+    if (!("webkitAudioDecodedByteCount" in video)) return;
+    const audioBytes = Number(video.webkitAudioDecodedByteCount || 0);
+    if (audioBytes === 0) showSilentAudioPopup("Obraz jest odtwarzany, ale przeglądarka nie dekoduje żadnego audio");
+  });
+}
+
 if (typeof window !== "undefined") {
   const shouldShowLimitView = () => sessionStorage.getItem(LIMIT_VIEW_KEY) === "1" || profileLimitExhausted();
   const enforceLimitView = () => { if (shouldShowLimitView()) showLimitExhaustedPlayerView(); };
-  const observer = new MutationObserver(() => { enforceLimitView(); scanHlsVideos(); });
+  const observer = new MutationObserver(() => { enforceLimitView(); scanHlsVideos(); scanSilentAudio(); });
   observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["src"] });
-  setInterval(() => { enforceLimitView(); scanHlsVideos(); }, 500);
+  setInterval(() => { enforceLimitView(); scanHlsVideos(); scanSilentAudio(); }, 1000);
 }
 
 async function assertGuestCanRequestStreams(token) {
