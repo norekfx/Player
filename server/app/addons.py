@@ -40,6 +40,8 @@ def stream_text(stream: dict) -> str:
         stream.get("title"),
         stream.get("quality"),
         stream.get("description"),
+        stream.get("addon"),
+        stream.get("url"),
         hints.get("filename"),
     ]
     return " ".join(str(part) for part in parts if part)
@@ -49,6 +51,62 @@ def detect_quality(stream: dict) -> str:
     text = stream_text(stream)
     match = re.search(r"(?<!\d)(2160|1440|1080|720|480|360)\s*p?(?!\d)", text, flags=re.I)
     return f"{match.group(1)}p" if match else str(stream.get("quality") or "")
+
+
+def detect_container(stream: dict) -> str:
+    text = stream_text(stream).lower()
+    match = re.search(r"\.(mkv|mp4|m4v|webm|mov)(?:\b|$|[?&#])", text)
+    if match:
+        return match.group(1)
+    for value in ("mkv", "mp4", "m4v", "webm"):
+        if re.search(rf"(^|[^a-z0-9]){value}([^a-z0-9]|$)", text):
+            return value
+    return ""
+
+
+def detect_audio_codec(stream: dict) -> str:
+    text = stream_text(stream).lower()
+    checks = [
+        (r"\b(e-?ac-?3|eac3|ddp|dolby\s*digital\s*plus)\b", "eac3"),
+        (r"\b(ac-?3|ac3|dolby\s*digital)\b", "ac3"),
+        (r"\b(dts(?:-?hd)?|truehd|atmos)\b", "dts"),
+        (r"\b(aac|mp4a|m4a)\b", "aac"),
+        (r"\b(opus)\b", "opus"),
+        (r"\b(vorbis|ogg)\b", "vorbis"),
+        (r"\b(mp3|mpeg\s*audio)\b", "mp3"),
+    ]
+    for pattern, codec in checks:
+        if re.search(pattern, text):
+            return codec
+    return ""
+
+
+def is_browser_audio_risky(stream: dict) -> bool:
+    return detect_audio_codec(stream) in {"ac3", "eac3", "dts"}
+
+
+def browser_audio_score(stream: dict) -> int:
+    codec = detect_audio_codec(stream)
+    container = detect_container(stream)
+    if codec in {"aac", "mp3", "opus", "vorbis"}:
+        return 0
+    if container in {"mp4", "m4v", "webm"} and codec not in {"ac3", "eac3", "dts"}:
+        return 1
+    if not codec and container not in {"mkv"}:
+        return 2
+    if codec in {"ac3", "eac3", "dts"}:
+        return 10
+    if container == "mkv":
+        return 6
+    return 3
+
+
+def quality_score(stream: dict) -> int:
+    quality = detect_quality(stream)
+    try:
+        return -int(quality.lower().replace("p", ""))
+    except Exception:
+        return 0
 
 
 def normalize_stream(stream: dict) -> dict:
@@ -61,14 +119,31 @@ def normalize_stream(stream: dict) -> dict:
     quality = detect_quality(normalized)
     if quality:
         normalized["quality"] = quality
+    audio_codec = detect_audio_codec(normalized)
+    container = detect_container(normalized)
+    if audio_codec:
+        normalized["audio_codec"] = audio_codec
+    if container:
+        normalized["container"] = container
+    normalized["browser_audio_risky"] = is_browser_audio_risky(normalized)
     hints = normalized.get("behaviorHints") or {}
     raw_label = normalized.get("name") or normalized.get("title") or hints.get("filename") or quality
     label = normalize_stream_label(raw_label)
     if quality and quality.lower() not in label.lower():
         label = f"{quality} {label}".strip()
+    if audio_codec in {"ac3", "eac3", "dts"} and "ryzykowny audio" not in label.lower():
+        label = f"⚠ audio {audio_codec.upper()} • {label}".strip()
+    elif audio_codec and audio_codec.upper() not in label.upper():
+        label = f"{audio_codec.upper()} • {label}".strip()
     if label:
         normalized["name"] = label
     return normalized
+
+
+def sort_streams_for_browser(streams: list[dict]) -> list[dict]:
+    indexed = list(enumerate(streams))
+    indexed.sort(key=lambda pair: (browser_audio_score(pair[1]), quality_score(pair[1]), pair[0]))
+    return [stream for _, stream in indexed]
 
 
 async def fetch_json(base_url: str, path: str, timeout_seconds: float = 15) -> dict:
@@ -121,7 +196,8 @@ async def fetch_streams(base_url: str, content_type: str, content_id: str) -> di
     # Pierwsze wyszukanie źródeł w wielu addonach bywa wolne, bo addon dopiero buduje własny cache.
     # Krótki timeout powodował fałszywe "brak źródeł" przy pierwszym odtworzeniu.
     data = await fetch_json(base_url, f"stream/{safe_path_part(content_type)}/{safe_path_part(content_id)}.json", timeout_seconds=55)
-    data["streams"] = [stream for stream in (normalize_stream(item) for item in data.get("streams", [])) if stream.get("url")]
+    streams = [stream for stream in (normalize_stream(item) for item in data.get("streams", [])) if stream.get("url")]
+    data["streams"] = sort_streams_for_browser(streams)
     return data
 
 
