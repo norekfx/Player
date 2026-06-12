@@ -95,8 +95,12 @@ function isHlsUrl(url) {
   return /\.m3u8(\?|#|$)/i.test(String(url || ""));
 }
 
+function playerSelects() {
+  return [...document.querySelectorAll(".player-page select")].filter((select) => select.options?.length > 1);
+}
+
 function currentStreamText() {
-  const select = [...document.querySelectorAll(".player-page .compact-select select")].find((item) => item.options?.length > 1);
+  const select = playerSelects().find((item) => [...item.options].some((option) => /720|1080|2160|4k|stream|torrentio|webrip|bluray|hls|cda/i.test(option.textContent || ""))) || playerSelects()[0];
   const option = select ? ([...select.options].find((item) => item.selected) || select.options[Number(select.value)] || select.options[0]) : null;
   return option?.textContent || document.querySelector(".player-page h1")?.textContent || "aktualny stream";
 }
@@ -186,10 +190,8 @@ function showBufferingPopup() {
 }
 
 function streamSelect() {
-  return [...document.querySelectorAll(".player-page .compact-select select")].find((select) => {
-    const text = [...select.options].map((option) => option.textContent || "").join(" ");
-    return select.options.length > 1 && (/720|1080|2160|4k|stream|torrentio|webrip|bluray|hls|cda/i.test(text));
-  });
+  const selects = playerSelects();
+  return selects.find((select) => [...select.options].some((option) => /(^|[^0-9])720(p)?([^0-9]|$)/i.test(option.textContent || ""))) || selects.find((select) => [...select.options].some((option) => /1080|2160|4k|stream|torrentio|webrip|bluray|hls|cda/i.test(option.textContent || ""))) || selects[0];
 }
 
 function selectedOptionText(select) {
@@ -207,12 +209,13 @@ function switchTo720p() {
   if (!candidate || candidate.value === select.value) return false;
   select.value = candidate.value;
   select.dispatchEvent(new Event("change", { bubbles: true }));
+  select.dispatchEvent(new Event("input", { bubbles: true }));
   showBufferingPopup();
   return true;
 }
 
 function loadingOverlay() {
-  return [...document.querySelectorAll(".player-page .loading-overlay")].find((overlay) => /Szukam źródeł|Szukam zrodel|Ładuje film|Laduje film/i.test(overlay.textContent || ""));
+  return document.querySelector(".player-page .loading-overlay");
 }
 
 function setLoadingFilmText() {
@@ -314,9 +317,10 @@ function scanSilentAudio() {
 if (typeof window !== "undefined") {
   const shouldShowLimitView = () => sessionStorage.getItem(LIMIT_VIEW_KEY) === "1" || profileLimitExhausted();
   const enforceLimitView = () => { if (shouldShowLimitView()) showLimitExhaustedPlayerView(); };
-  const observer = new MutationObserver(() => { enforceLimitView(); scanHlsVideos(); scanSilentAudio(); scanLongBuffering(); });
-  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["src"] });
-  setInterval(() => { enforceLimitView(); scanHlsVideos(); scanSilentAudio(); scanLongBuffering(); }, 1000);
+  const tick = () => { enforceLimitView(); scanHlsVideos(); scanSilentAudio(); scanLongBuffering(); };
+  const observer = new MutationObserver(tick);
+  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["src", "value"] });
+  setInterval(tick, 500);
 }
 
 async function assertGuestCanRequestStreams(token) {
