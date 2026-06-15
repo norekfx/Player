@@ -76,7 +76,7 @@ function markLimitExhaustedView() {
   showLimitExhaustedPlayerView();
 }
 
-const audioFallbackState = { bound: new WeakSet(), originalUrl: "", originalLabel: "", handledSrc: "", probingSrc: "" };
+const audioFallbackState = { bound: new WeakSet(), originalUrl: "", originalLabel: "", handledSrc: "", probingSrc: "", fallbackUsed: false };
 function audioDebug(message, data = {}) {
   try {
     window.__PLAYER_AUDIO_FALLBACK_LAST = { message, data, at: new Date().toISOString() };
@@ -115,6 +115,7 @@ function showAudioFallbackPopup(originalUrl, originalLabel) {
   addAudioPopupParagraph(modal, "Wykryto, że dźwięk w wersji Original może nie być odtwarzany przez tę przeglądarkę albo nie da się go wiarygodnie potwierdzić.");
   addAudioPopupParagraph(modal, "Nie każda przeglądarka obsługuje wszystkie kodeki audio i kontenery wideo. Plik może zawierać ścieżkę audio w formacie, którego ta przeglądarka nie potrafi zdekodować, mimo że obraz działa.");
   addAudioPopupParagraph(modal, "Zmieniono na wersję transkodowaną 720p. Transkodowanie zwykle poprawia zgodność, ale może się przycinać w zależności od oryginalnego wideo, jego jakości oraz obciążenia serwera.");
+  addAudioPopupParagraph(modal, "Możesz ręcznie wrócić do Original z listy jakości. Automatyczne przełączanie audio zostanie wstrzymane do odświeżenia strony.");
   const actions = document.createElement("div");
   actions.style.cssText = "display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:18px";
   const closeButton = document.createElement("button");
@@ -151,7 +152,8 @@ function switchOriginalTo720p(reason = "audio-not-confirmed") {
   const video = document.querySelector(".player-page video, .player-shell video");
   const originalUrl = audioFallbackState.originalUrl || video?.currentSrc || video?.src || "";
   const originalLabel = audioFallbackState.originalLabel || streamOptionText(current) || "Original";
-  audioDebug("switching original to 720p", { reason, originalLabel, candidate: streamOptionText(candidate) });
+  audioFallbackState.fallbackUsed = true;
+  audioDebug("switching original to 720p", { reason, originalLabel, candidate: streamOptionText(candidate), fallbackDisabledUntilReload: true });
   select.value = candidate.value;
   select.dispatchEvent(new Event("change", { bubbles: true }));
   select.dispatchEvent(new Event("input", { bubbles: true }));
@@ -191,6 +193,7 @@ function sampleCapturedAudio(video) {
   });
 }
 async function probeOriginalAudio(video) {
+  if (audioFallbackState.fallbackUsed) { audioDebug("fallback disabled until reload"); return; }
   if (!currentStreamLooksOriginal()) return;
   rememberOriginalStream(video);
   const src = video.currentSrc || video.src || "";
@@ -202,6 +205,7 @@ async function probeOriginalAudio(video) {
   audioDebug("probe scheduled", { src, hasAudioCounter, startAudioBytes, startTime, label: audioFallbackState.originalLabel });
   setTimeout(async () => {
     audioFallbackState.probingSrc = "";
+    if (audioFallbackState.fallbackUsed) return;
     if (!document.body.contains(video)) return;
     if (!currentStreamLooksOriginal()) return;
     if ((video.currentSrc || video.src || "") !== src) return;
@@ -230,7 +234,7 @@ function bindAudioFallbackVideo(video) {
   ["loadedmetadata", "canplay", "playing", "timeupdate"].forEach((eventName) => {
     video.addEventListener(eventName, () => { rememberOriginalStream(video); probeOriginalAudio(video); });
   });
-  video.addEventListener("error", () => { if (currentStreamLooksOriginal()) { rememberOriginalStream(video); switchOriginalTo720p("video-error"); } });
+  video.addEventListener("error", () => { if (!audioFallbackState.fallbackUsed && currentStreamLooksOriginal()) { rememberOriginalStream(video); switchOriginalTo720p("video-error"); } });
 }
 function scanAudioFallbackVideos() { if (typeof document === "undefined") return; document.querySelectorAll(".player-page video, .player-shell video").forEach(bindAudioFallbackVideo); }
 
