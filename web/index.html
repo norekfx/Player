@@ -25,6 +25,9 @@
       .guest-helper-panel { border-top: 1px solid rgba(255,255,255,.08); padding-top: 12px; margin-top: 14px; }
       .cache-refresh-panel input { max-width: 120px; margin-right: 8px; }
       .cache-refresh-panel small { color: #bbb; display: block; margin-top: 8px; line-height: 1.45; }
+      @keyframes playerToastCountdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+      .toast.timed-player-notice { position: relative; overflow: hidden; padding-bottom: 14px; }
+      .toast.timed-player-notice::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: linear-gradient(90deg, #fff, rgba(255,255,255,.35)); transform-origin: left center; animation: playerToastCountdown 3s linear forwards; }
       @media (max-width: 760px) { .modal { padding: 22px; } .check-list { max-height: 210px; } }
     </style>
   </head>
@@ -117,6 +120,42 @@
         const observer = new MutationObserver(injectAdminControls);
         observer.observe(document.documentElement, { childList: true, subtree: true });
         document.addEventListener('DOMContentLoaded', injectAdminControls);
+      })();
+    </script>
+    <script>
+      (() => {
+        const TIMED_NOTICE_TEXTS = [
+          'Kliknij play, jeśli przeglądarka zablokowała autoodtwarzanie.',
+          'Film długo się buforuje. Nie znaleziono automatycznej opcji 720p dla tego źródła.',
+        ];
+
+        function isTimedPlayerNotice(node) {
+          const text = node?.textContent || '';
+          return TIMED_NOTICE_TEXTS.some((notice) => text.includes(notice));
+        }
+
+        function decorateTimedPlayerNotices() {
+          document.querySelectorAll('.toast').forEach((toast) => {
+            if (!isTimedPlayerNotice(toast)) return;
+            if (toast.dataset.timedPlayerNotice === 'done') {
+              toast.remove();
+              return;
+            }
+            if (toast.dataset.timedPlayerNotice === 'running') return;
+            toast.dataset.timedPlayerNotice = 'running';
+            toast.classList.add('timed-player-notice');
+            setTimeout(() => {
+              toast.dataset.timedPlayerNotice = 'done';
+              toast.style.display = 'none';
+              toast.remove();
+            }, 3000);
+          });
+        }
+
+        const noticeObserver = new MutationObserver(decorateTimedPlayerNotices);
+        noticeObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+        document.addEventListener('DOMContentLoaded', decorateTimedPlayerNotices);
+        setInterval(decorateTimedPlayerNotices, 500);
       })();
     </script>
     <script type="module" src="/src/main.jsx"></script>
