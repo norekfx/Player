@@ -101,27 +101,36 @@ function rememberOriginalStream(video) {
   audioFallbackState.originalLabel = label || audioFallbackState.originalLabel;
 }
 function closeAudioFallbackPopup() { document.querySelector(".audio-codec-modal")?.remove(); }
-function addAudioPopupParagraph(parent, text) { const paragraph = document.createElement("p"); paragraph.textContent = text; parent.appendChild(paragraph); }
+function addAudioPopupParagraph(parent, text) {
+  const paragraph = document.createElement("p");
+  paragraph.textContent = text;
+  paragraph.style.cssText = "margin:0 0 12px;font-size:clamp(14px,3.7vw,16px);line-height:1.45";
+  parent.appendChild(paragraph);
+}
 function showAudioFallbackPopup(originalUrl, originalLabel) {
   if (typeof document === "undefined") return;
   closeAudioFallbackPopup();
   const backdrop = document.createElement("div");
   backdrop.className = "modal-backdrop audio-codec-modal";
+  backdrop.style.cssText = "align-items:start;overflow:auto;padding:12px;overscroll-behavior:contain";
   const modal = document.createElement("div");
   modal.className = "modal glass";
+  modal.style.cssText = "width:min(520px,100%);max-height:calc(100dvh - 24px);overflow:auto;padding:clamp(16px,4vw,28px);border-radius:22px";
   const title = document.createElement("h2");
   title.textContent = "Audio może nie być obsługiwane";
+  title.style.cssText = "font-size:clamp(22px,6vw,30px);margin:0 0 12px;line-height:1.15";
   modal.appendChild(title);
   addAudioPopupParagraph(modal, "Wykryto, że dźwięk w wersji Original może nie być odtwarzany przez tę przeglądarkę albo nie da się go wiarygodnie potwierdzić.");
   addAudioPopupParagraph(modal, "Nie każda przeglądarka obsługuje wszystkie kodeki audio i kontenery wideo. Plik może zawierać ścieżkę audio w formacie, którego ta przeglądarka nie potrafi zdekodować, mimo że obraz działa.");
   addAudioPopupParagraph(modal, "Zmieniono na wersję transkodowaną 720p. Transkodowanie zwykle poprawia zgodność, ale może się przycinać w zależności od oryginalnego wideo, jego jakości oraz obciążenia serwera.");
   addAudioPopupParagraph(modal, "Możesz ręcznie wrócić do Original z listy jakości. Automatyczne przełączanie audio zostanie wstrzymane do odświeżenia strony.");
   const actions = document.createElement("div");
-  actions.style.cssText = "display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:18px";
+  actions.style.cssText = "display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:14px;padding-top:4px";
   const closeButton = document.createElement("button");
   closeButton.className = "primary";
   closeButton.type = "button";
   closeButton.textContent = "Zamknij";
+  closeButton.style.cssText = "min-height:40px;padding:10px 14px";
   closeButton.addEventListener("click", closeAudioFallbackPopup);
   actions.appendChild(closeButton);
   if (originalUrl) {
@@ -129,13 +138,14 @@ function showAudioFallbackPopup(originalUrl, originalLabel) {
     downloadButton.className = "danger";
     downloadButton.type = "button";
     downloadButton.textContent = "Pobierz Original";
+    downloadButton.style.cssText = "min-height:40px;padding:10px 14px";
     downloadButton.addEventListener("click", () => window.open(originalUrl, "_blank", "noopener,noreferrer"));
     actions.appendChild(downloadButton);
   }
   modal.appendChild(actions);
   if (originalLabel) {
     const source = document.createElement("small");
-    source.style.cssText = "display:block;margin-top:14px;color:#bbb;overflow-wrap:anywhere";
+    source.style.cssText = "display:block;margin-top:12px;color:#bbb;overflow-wrap:anywhere;font-size:12px;line-height:1.35";
     source.textContent = `Oryginalne źródło: ${originalLabel}`;
     modal.appendChild(source);
   }
