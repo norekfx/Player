@@ -77,6 +77,12 @@ function markLimitExhaustedView() {
 }
 
 const audioFallbackState = { bound: new WeakSet(), originalUrl: "", originalLabel: "", handledSrc: "", probingSrc: "" };
+function audioDebug(message, data = {}) {
+  try {
+    window.__PLAYER_AUDIO_FALLBACK_LAST = { message, data, at: new Date().toISOString() };
+    console.info("[Player audio fallback]", message, data);
+  } catch {}
+}
 function streamOptionText(option) { return String(option?.textContent || "").trim(); }
 function isOriginalStreamLabel(text) { return /original|orygina[lł]/i.test(String(text || "")); }
 function is720pStreamLabel(text) { return /(^|[^0-9])720(p)?([^0-9]|$)/i.test(String(text || "")); }
@@ -106,7 +112,7 @@ function showAudioFallbackPopup(originalUrl, originalLabel) {
   const title = document.createElement("h2");
   title.textContent = "Audio może nie być obsługiwane";
   modal.appendChild(title);
-  addAudioPopupParagraph(modal, "Wykryto, że dźwięk w wersji Original może nie być odtwarzany przez tę przeglądarkę.");
+  addAudioPopupParagraph(modal, "Wykryto, że dźwięk w wersji Original może nie być odtwarzany przez tę przeglądarkę albo nie da się go wiarygodnie potwierdzić.");
   addAudioPopupParagraph(modal, "Nie każda przeglądarka obsługuje wszystkie kodeki audio i kontenery wideo. Plik może zawierać ścieżkę audio w formacie, którego ta przeglądarka nie potrafi zdekodować, mimo że obraz działa.");
   addAudioPopupParagraph(modal, "Zmieniono na wersję transkodowaną 720p. Transkodowanie zwykle poprawia zgodność, ale może się przycinać w zależności od oryginalnego wideo, jego jakości oraz obciążenia serwera.");
   const actions = document.createElement("div");
@@ -135,16 +141,17 @@ function showAudioFallbackPopup(originalUrl, originalLabel) {
   backdrop.appendChild(modal);
   document.body.appendChild(backdrop);
 }
-function switchOriginalTo720p() {
+function switchOriginalTo720p(reason = "audio-not-confirmed") {
   const select = streamQualitySelect();
-  if (!select) return false;
+  if (!select) { audioDebug("no quality select", { reason }); return false; }
   const current = selectedStreamOption(select);
-  if (is720pStreamLabel(streamOptionText(current))) return false;
+  if (is720pStreamLabel(streamOptionText(current))) { audioDebug("already on 720p", { reason }); return false; }
   const candidate = [...select.options].find((option) => is720pStreamLabel(streamOptionText(option)));
-  if (!candidate) return false;
+  if (!candidate) { audioDebug("no 720p option", { reason, options: [...select.options].map(streamOptionText) }); return false; }
   const video = document.querySelector(".player-page video, .player-shell video");
   const originalUrl = audioFallbackState.originalUrl || video?.currentSrc || video?.src || "";
   const originalLabel = audioFallbackState.originalLabel || streamOptionText(current) || "Original";
+  audioDebug("switching original to 720p", { reason, originalLabel, candidate: streamOptionText(candidate) });
   select.value = candidate.value;
   select.dispatchEvent(new Event("change", { bubbles: true }));
   select.dispatchEvent(new Event("input", { bubbles: true }));
@@ -192,6 +199,7 @@ async function probeOriginalAudio(video) {
   const hasAudioCounter = "webkitAudioDecodedByteCount" in video;
   const startAudioBytes = Number(video.webkitAudioDecodedByteCount || 0);
   const startTime = Number(video.currentTime || 0);
+  audioDebug("probe scheduled", { src, hasAudioCounter, startAudioBytes, startTime, label: audioFallbackState.originalLabel });
   setTimeout(async () => {
     audioFallbackState.probingSrc = "";
     if (!document.body.contains(video)) return;
@@ -199,26 +207,30 @@ async function probeOriginalAudio(video) {
     if ((video.currentSrc || video.src || "") !== src) return;
     const endAudioBytes = Number(video.webkitAudioDecodedByteCount || 0);
     const endTime = Number(video.currentTime || 0);
-    const videoIsAdvancing = endTime > Math.max(3, startTime + 2);
+    const videoIsAdvancing = endTime > Math.max(4, startTime + 3);
     const userExpectsAudio = !video.muted && Number(video.volume || 0) > 0;
-    if (!videoIsAdvancing || !userExpectsAudio) return;
     const noDecodedAudio = hasAudioCounter && endAudioBytes <= startAudioBytes;
+    const audioCounterConfirmed = hasAudioCounter && endAudioBytes > startAudioBytes;
     const capturedPeak = await sampleCapturedAudio(video);
+    const capturedAudioConfirmed = typeof capturedPeak === "number" && capturedPeak >= 2;
     const noCapturedAudio = capturedPeak === 0;
-    const silentCapturedAudio = typeof capturedPeak === "number" && capturedPeak > 0 && capturedPeak < 2;
-    if (noDecodedAudio || noCapturedAudio || silentCapturedAudio) {
+    const audioConfirmed = audioCounterConfirmed || capturedAudioConfirmed;
+    const audioMissingOrUnconfirmed = noDecodedAudio || noCapturedAudio || !audioConfirmed;
+    audioDebug("probe result", { src, startAudioBytes, endAudioBytes, capturedPeak, videoIsAdvancing, userExpectsAudio, audioCounterConfirmed, capturedAudioConfirmed, audioConfirmed, audioMissingOrUnconfirmed });
+    if (videoIsAdvancing && userExpectsAudio && audioMissingOrUnconfirmed) {
       audioFallbackState.handledSrc = src;
-      switchOriginalTo720p();
+      switchOriginalTo720p(audioConfirmed ? "audio-silent" : "audio-unconfirmed");
     }
-  }, 8500);
+  }, 9000);
 }
 function bindAudioFallbackVideo(video) {
   if (!video || audioFallbackState.bound.has(video)) return;
   audioFallbackState.bound.add(video);
+  audioDebug("video bound", { src: video.currentSrc || video.src || "" });
   ["loadedmetadata", "canplay", "playing", "timeupdate"].forEach((eventName) => {
     video.addEventListener(eventName, () => { rememberOriginalStream(video); probeOriginalAudio(video); });
   });
-  video.addEventListener("error", () => { if (currentStreamLooksOriginal()) { rememberOriginalStream(video); switchOriginalTo720p(); } });
+  video.addEventListener("error", () => { if (currentStreamLooksOriginal()) { rememberOriginalStream(video); switchOriginalTo720p("video-error"); } });
 }
 function scanAudioFallbackVideos() { if (typeof document === "undefined") return; document.querySelectorAll(".player-page video, .player-shell video").forEach(bindAudioFallbackVideo); }
 
