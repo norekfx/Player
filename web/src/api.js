@@ -76,14 +76,24 @@ function markLimitExhaustedView() {
   showLimitExhaustedPlayerView();
 }
 
-const audioFallbackState = { bound: new WeakSet(), originalUrl: "", originalLabel: "", handledSrc: "" };
+const audioFallbackState = { bound: new WeakSet(), originalUrl: "", originalLabel: "", handledSrc: "", probingSrc: "" };
 function streamOptionText(option) { return String(option?.textContent || "").trim(); }
-function isOriginalStreamLabel(text) { return /original|orygina/i.test(String(text || "")); }
+function isOriginalStreamLabel(text) { return /original|orygina[lł]/i.test(String(text || "")); }
 function is720pStreamLabel(text) { return /(^|[^0-9])720(p)?([^0-9]|$)/i.test(String(text || "")); }
-function streamQualitySelect() { if (typeof document === "undefined") return null; return [...document.querySelectorAll(".player-controls select")].find((select) => [...select.options].some((option) => is720pStreamLabel(streamOptionText(option)))) || null; }
+function streamQualitySelect() {
+  if (typeof document === "undefined") return null;
+  const selects = [...document.querySelectorAll(".player-page select, .player-controls select")].filter((select) => select.options?.length > 1);
+  return selects.find((select) => [...select.options].some((option) => is720pStreamLabel(streamOptionText(option)))) || selects[0] || null;
+}
 function selectedStreamOption(select) { return select?.options?.[select.selectedIndex] || null; }
 function currentStreamLooksOriginal() { const select = streamQualitySelect(); return isOriginalStreamLabel(streamOptionText(selectedStreamOption(select))); }
-function rememberOriginalStream(video) { const select = streamQualitySelect(); const label = streamOptionText(selectedStreamOption(select)); if (!isOriginalStreamLabel(label)) return; audioFallbackState.originalUrl = video.currentSrc || video.src || audioFallbackState.originalUrl; audioFallbackState.originalLabel = label || audioFallbackState.originalLabel; }
+function rememberOriginalStream(video) {
+  const select = streamQualitySelect();
+  const label = streamOptionText(selectedStreamOption(select));
+  if (!isOriginalStreamLabel(label)) return;
+  audioFallbackState.originalUrl = video.currentSrc || video.src || audioFallbackState.originalUrl;
+  audioFallbackState.originalLabel = label || audioFallbackState.originalLabel;
+}
 function closeAudioFallbackPopup() { document.querySelector(".audio-codec-modal")?.remove(); }
 function addAudioPopupParagraph(parent, text) { const paragraph = document.createElement("p"); paragraph.textContent = text; parent.appendChild(paragraph); }
 function showAudioFallbackPopup(originalUrl, originalLabel) {
@@ -132,23 +142,58 @@ function switchOriginalTo720p() {
   if (is720pStreamLabel(streamOptionText(current))) return false;
   const candidate = [...select.options].find((option) => is720pStreamLabel(streamOptionText(option)));
   if (!candidate) return false;
-  const video = document.querySelector(".player-shell video");
+  const video = document.querySelector(".player-page video, .player-shell video");
   const originalUrl = audioFallbackState.originalUrl || video?.currentSrc || video?.src || "";
   const originalLabel = audioFallbackState.originalLabel || streamOptionText(current) || "Original";
   select.value = candidate.value;
   select.dispatchEvent(new Event("change", { bubbles: true }));
+  select.dispatchEvent(new Event("input", { bubbles: true }));
   setTimeout(() => showAudioFallbackPopup(originalUrl, originalLabel), 150);
   return true;
 }
-function probeOriginalAudio(video) {
+function sampleCapturedAudio(video) {
+  return new Promise((resolve) => {
+    try {
+      const capture = video.captureStream?.() || video.mozCaptureStream?.();
+      if (!capture) return resolve(null);
+      const tracks = capture.getAudioTracks?.() || [];
+      if (!tracks.length) return resolve(0);
+      const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextCtor) return resolve(null);
+      const context = new AudioContextCtor();
+      const source = context.createMediaStreamSource(capture);
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 2048;
+      source.connect(analyser);
+      const data = new Uint8Array(analyser.fftSize);
+      let peak = 0;
+      let samples = 0;
+      const interval = setInterval(() => {
+        analyser.getByteTimeDomainData(data);
+        for (const value of data) peak = Math.max(peak, Math.abs(value - 128));
+        samples += 1;
+        if (samples >= 8) {
+          clearInterval(interval);
+          context.close?.();
+          resolve(peak);
+        }
+      }, 180);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+async function probeOriginalAudio(video) {
   if (!currentStreamLooksOriginal()) return;
   rememberOriginalStream(video);
   const src = video.currentSrc || video.src || "";
-  if (!src || audioFallbackState.handledSrc === src) return;
+  if (!src || audioFallbackState.handledSrc === src || audioFallbackState.probingSrc === src) return;
+  audioFallbackState.probingSrc = src;
   const hasAudioCounter = "webkitAudioDecodedByteCount" in video;
   const startAudioBytes = Number(video.webkitAudioDecodedByteCount || 0);
   const startTime = Number(video.currentTime || 0);
-  setTimeout(() => {
+  setTimeout(async () => {
+    audioFallbackState.probingSrc = "";
     if (!document.body.contains(video)) return;
     if (!currentStreamLooksOriginal()) return;
     if ((video.currentSrc || video.src || "") !== src) return;
@@ -156,22 +201,26 @@ function probeOriginalAudio(video) {
     const endTime = Number(video.currentTime || 0);
     const videoIsAdvancing = endTime > Math.max(3, startTime + 2);
     const userExpectsAudio = !video.muted && Number(video.volume || 0) > 0;
+    if (!videoIsAdvancing || !userExpectsAudio) return;
     const noDecodedAudio = hasAudioCounter && endAudioBytes <= startAudioBytes;
-    if (videoIsAdvancing && userExpectsAudio && noDecodedAudio) {
+    const capturedPeak = await sampleCapturedAudio(video);
+    const noCapturedAudio = capturedPeak === 0;
+    const silentCapturedAudio = typeof capturedPeak === "number" && capturedPeak > 0 && capturedPeak < 2;
+    if (noDecodedAudio || noCapturedAudio || silentCapturedAudio) {
       audioFallbackState.handledSrc = src;
       switchOriginalTo720p();
     }
-  }, 6500);
+  }, 8500);
 }
 function bindAudioFallbackVideo(video) {
   if (!video || audioFallbackState.bound.has(video)) return;
   audioFallbackState.bound.add(video);
-  ["loadedmetadata", "canplay", "playing"].forEach((eventName) => {
+  ["loadedmetadata", "canplay", "playing", "timeupdate"].forEach((eventName) => {
     video.addEventListener(eventName, () => { rememberOriginalStream(video); probeOriginalAudio(video); });
   });
   video.addEventListener("error", () => { if (currentStreamLooksOriginal()) { rememberOriginalStream(video); switchOriginalTo720p(); } });
 }
-function scanAudioFallbackVideos() { if (typeof document === "undefined") return; document.querySelectorAll(".player-shell video").forEach(bindAudioFallbackVideo); }
+function scanAudioFallbackVideos() { if (typeof document === "undefined") return; document.querySelectorAll(".player-page video, .player-shell video").forEach(bindAudioFallbackVideo); }
 
 if (typeof window !== "undefined") {
   const enforceLimitView = () => {
@@ -186,6 +235,7 @@ if (typeof window !== "undefined") {
   window.addEventListener("DOMContentLoaded", tick);
   window.addEventListener("popstate", tick);
   setTimeout(tick, 0);
+  setInterval(scanAudioFallbackVideos, 1000);
 }
 
 async function assertGuestCanRequestStreams(token) {
