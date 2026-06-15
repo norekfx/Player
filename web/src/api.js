@@ -3,6 +3,7 @@ const UI_KEY = "player_ui_state_v1";
 const LIMIT_VIEW_KEY = "player_limit_exhausted_view_v1";
 const SILENT_AUDIO_POPUP_KEY = "player_silent_audio_popup_seen_v1";
 const BUFFER_POPUP_KEY = "player_buffering_popup_seen_v1";
+const AUTOPLAY_NOTICE_TEXT = "Kliknij play, jeśli przeglądarka zablokowała autoodtwarzanie.";
 
 export function getToken() {
   return localStorage.getItem("player_token");
@@ -93,6 +94,7 @@ function streamQualitySelect() {
 }
 function selectedStreamOption(select) { return select?.options?.[select.selectedIndex] || null; }
 function currentStreamLooksOriginal() { const select = streamQualitySelect(); return isOriginalStreamLabel(streamOptionText(selectedStreamOption(select))); }
+function currentSelectIsOriginal(select) { return isOriginalStreamLabel(streamOptionText(selectedStreamOption(select))); }
 function rememberOriginalStream(video) {
   const select = streamQualitySelect();
   const label = streamOptionText(selectedStreamOption(select));
@@ -107,6 +109,25 @@ function addAudioPopupParagraph(parent, text) {
   paragraph.textContent = text;
   paragraph.style.cssText = "margin:0 0 12px;font-size:clamp(14px,3.7vw,16px);line-height:1.45";
   parent.appendChild(paragraph);
+}
+function enableManualOriginalOverride(select = streamQualitySelect()) {
+  if (!select) return false;
+  let originalOption = selectedStreamOption(select);
+  if (!currentSelectIsOriginal(select)) {
+    originalOption = [...select.options].find((option) => isOriginalStreamLabel(streamOptionText(option))) || null;
+  }
+  if (!originalOption) {
+    audioDebug("manual original override failed: no original option");
+    return false;
+  }
+  audioFallbackState.userForcedOriginal = true;
+  audioFallbackState.fallbackUsed = true;
+  audioFallbackState.forcedOriginalValue = originalOption.value;
+  audioFallbackState.handledSrc = "";
+  audioFallbackState.probingSrc = "";
+  audioDebug("manual original override enabled", { label: streamOptionText(originalOption), value: originalOption.value });
+  restoreForcedOriginal(select);
+  return true;
 }
 function showAudioFallbackPopup(originalUrl, originalLabel) {
   if (typeof document === "undefined") return;
@@ -124,7 +145,7 @@ function showAudioFallbackPopup(originalUrl, originalLabel) {
   addAudioPopupParagraph(modal, "Wykryto, że dźwięk w wersji Original może nie być odtwarzany przez tę przeglądarkę albo nie da się go wiarygodnie potwierdzić.");
   addAudioPopupParagraph(modal, "Nie każda przeglądarka obsługuje wszystkie kodeki audio i kontenery wideo. Plik może zawierać ścieżkę audio w formacie, którego ta przeglądarka nie potrafi zdekodować, mimo że obraz działa.");
   addAudioPopupParagraph(modal, "Zmieniono na wersję transkodowaną 720p. Transkodowanie zwykle poprawia zgodność, ale może się przycinać w zależności od oryginalnego wideo, jego jakości oraz obciążenia serwera.");
-  addAudioPopupParagraph(modal, "Możesz ręcznie wrócić do Original z listy jakości. Automatyczne przełączanie audio zostanie wstrzymane do odświeżenia strony.");
+  addAudioPopupParagraph(modal, "Możesz wrócić do Original dla tej sesji oglądania. Po powrocie automatyczne przełączanie audio i buforowania nie będzie już wymuszać 720p aż do odświeżenia strony.");
   const actions = document.createElement("div");
   actions.style.cssText = "display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:14px;padding-top:4px";
   const closeButton = document.createElement("button");
@@ -134,6 +155,13 @@ function showAudioFallbackPopup(originalUrl, originalLabel) {
   closeButton.style.cssText = "min-height:40px;padding:10px 14px";
   closeButton.addEventListener("click", closeAudioFallbackPopup);
   actions.appendChild(closeButton);
+  const originalButton = document.createElement("button");
+  originalButton.className = "primary";
+  originalButton.type = "button";
+  originalButton.textContent = "Wróć do Original";
+  originalButton.style.cssText = "min-height:40px;padding:10px 14px";
+  originalButton.addEventListener("click", () => { enableManualOriginalOverride(); closeAudioFallbackPopup(); });
+  actions.appendChild(originalButton);
   if (originalUrl) {
     const downloadButton = document.createElement("button");
     downloadButton.className = "danger";
@@ -248,27 +276,23 @@ function bindAudioFallbackVideo(video) {
   });
   video.addEventListener("error", () => { if (!audioFallbackState.fallbackUsed && !audioFallbackState.userForcedOriginal && currentStreamLooksOriginal()) { rememberOriginalStream(video); switchOriginalTo720p("video-error"); } });
 }
-function currentSelectIsOriginal(select) { return isOriginalStreamLabel(streamOptionText(selectedStreamOption(select))); }
-function restoreForcedOriginal(select) {
-  if (!audioFallbackState.userForcedOriginal || audioFallbackState.revertingSelect || audioFallbackState.forcedOriginalValue === null) return;
-  if (currentSelectIsOriginal(select)) return;
+function restoreForcedOriginal(select = streamQualitySelect()) {
+  if (!select || !audioFallbackState.userForcedOriginal || audioFallbackState.revertingSelect || audioFallbackState.forcedOriginalValue === null) return;
+  if (String(select.value) === String(audioFallbackState.forcedOriginalValue) && currentSelectIsOriginal(select)) return;
   audioFallbackState.revertingSelect = true;
   audioDebug("restoring manual original selection", { from: streamOptionText(selectedStreamOption(select)), value: audioFallbackState.forcedOriginalValue });
   select.value = audioFallbackState.forcedOriginalValue;
   select.dispatchEvent(new Event("change", { bubbles: true }));
   select.dispatchEvent(new Event("input", { bubbles: true }));
-  setTimeout(() => { audioFallbackState.revertingSelect = false; }, 0);
+  setTimeout(() => { audioFallbackState.revertingSelect = false; }, 80);
 }
 function handleQualitySelectChange(event) {
   const select = event.currentTarget;
   const isOriginal = currentSelectIsOriginal(select);
   if (audioFallbackState.revertingSelect) return;
   if (audioFallbackState.fallbackUsed && isOriginal) {
-    audioFallbackState.userForcedOriginal = true;
-    audioFallbackState.forcedOriginalValue = select.value;
-    audioFallbackState.handledSrc = "";
-    audioFallbackState.probingSrc = "";
-    audioDebug("manual original override enabled", { trusted: event.isTrusted, label: streamOptionText(selectedStreamOption(select)), value: select.value });
+    enableManualOriginalOverride(select);
+    audioDebug("manual original override selected", { trusted: event.isTrusted, label: streamOptionText(selectedStreamOption(select)), value: select.value });
     return;
   }
   if (audioFallbackState.userForcedOriginal && !event.isTrusted && !isOriginal) {
@@ -287,7 +311,38 @@ function bindQualitySelect(select) {
   select.addEventListener("change", handleQualitySelectChange, true);
   select.addEventListener("input", handleQualitySelectChange, true);
 }
-function scanAudioFallbackVideos() { if (typeof document === "undefined") return; document.querySelectorAll(".player-page video, .player-shell video").forEach(bindAudioFallbackVideo); document.querySelectorAll(".player-page select, .player-controls select").forEach(bindQualitySelect); }
+function detectAndEnforceOriginalOverride() {
+  const select = streamQualitySelect();
+  if (!select) return;
+  if (audioFallbackState.fallbackUsed && !audioFallbackState.userForcedOriginal && currentSelectIsOriginal(select)) {
+    enableManualOriginalOverride(select);
+  }
+  restoreForcedOriginal(select);
+}
+function ensureNoticeCountdownStyles() {
+  if (document.getElementById("player-toast-countdown-style")) return;
+  const style = document.createElement("style");
+  style.id = "player-toast-countdown-style";
+  style.textContent = `@keyframes playerToastCountdown{from{transform:scaleX(1)}to{transform:scaleX(0)}}.toast.player-autoplay-toast{position:relative;overflow:hidden;padding-bottom:14px}.toast.player-autoplay-toast::after{content:"";position:absolute;left:0;right:0;bottom:0;height:3px;background:linear-gradient(90deg,#fff,rgba(255,255,255,.35));transform-origin:left center;animation:playerToastCountdown 3s linear forwards}`;
+  document.head.appendChild(style);
+}
+function decorateAutoplayNotice() {
+  if (typeof document === "undefined") return;
+  ensureNoticeCountdownStyles();
+  document.querySelectorAll(".toast").forEach((toast) => {
+    if (!toast.textContent?.includes(AUTOPLAY_NOTICE_TEXT)) return;
+    if (toast.dataset.autoplayCountdown === "done") { toast.remove(); return; }
+    if (toast.dataset.autoplayCountdown === "running") return;
+    toast.dataset.autoplayCountdown = "running";
+    toast.classList.add("player-autoplay-toast");
+    setTimeout(() => {
+      toast.dataset.autoplayCountdown = "done";
+      toast.style.display = "none";
+      toast.remove();
+    }, 3000);
+  });
+}
+function scanAudioFallbackVideos() { if (typeof document === "undefined") return; document.querySelectorAll(".player-page video, .player-shell video").forEach(bindAudioFallbackVideo); document.querySelectorAll(".player-page select, .player-controls select").forEach(bindQualitySelect); decorateAutoplayNotice(); detectAndEnforceOriginalOverride(); }
 
 if (typeof window !== "undefined") {
   const enforceLimitView = () => {
@@ -298,11 +353,11 @@ if (typeof window !== "undefined") {
 
   const tick = () => { enforceLimitView(); scanAudioFallbackVideos(); };
   const observer = new MutationObserver(tick);
-  observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
+  observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src", "class", "style"] });
   window.addEventListener("DOMContentLoaded", tick);
   window.addEventListener("popstate", tick);
   setTimeout(tick, 0);
-  setInterval(scanAudioFallbackVideos, 1000);
+  setInterval(tick, 500);
 }
 
 async function assertGuestCanRequestStreams(token) {
