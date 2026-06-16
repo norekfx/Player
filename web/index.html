@@ -25,6 +25,7 @@
       .guest-helper-panel { border-top: 1px solid rgba(255,255,255,.08); padding-top: 12px; margin-top: 14px; }
       .cache-refresh-panel input { max-width: 120px; margin-right: 8px; }
       .cache-refresh-panel small { color: #bbb; display: block; margin-top: 8px; line-height: 1.45; }
+      .cache-refresh-panel .cache-refresh-status { color: #ddd; display: block; margin-top: 8px; line-height: 1.45; }
       @keyframes playerToastCountdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
       .toast.timed-player-notice { position: relative; overflow: hidden; padding-bottom: 14px; }
       .toast.timed-player-notice::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: linear-gradient(90deg, #fff, rgba(255,255,255,.35)); transform-origin: left center; animation: playerToastCountdown 3s linear forwards; }
@@ -35,7 +36,22 @@
     <div id="root"></div>
     <script>
       (() => {
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = (input, init = {}) => {
+          const url = typeof input === 'string' ? input : input?.url;
+          if (typeof url === 'string' && (url.startsWith('/api/catalogs') || url.startsWith('/api/playback/history'))) {
+            const separator = url.includes('?') ? '&' : '?';
+            const nextUrl = `${url}${separator}_=${Date.now()}`;
+            return originalFetch(nextUrl, { ...init, cache: 'no-store' });
+          }
+          return originalFetch(input, init);
+        };
+      })();
+    </script>
+    <script>
+      (() => {
         const CACHE_KEY = 'player_home_cache_v1';
+        const UI_KEY = 'player_ui_state_v1';
         const INTERVAL_KEY = 'player_library_refresh_interval_days_v1';
         const DEFAULT_DAYS = 7;
         const MIN_DAYS = 1;
@@ -66,10 +82,21 @@
           localStorage.removeItem(CACHE_KEY);
         }
 
-        function clearAndReload() {
+        function setStatus(panel, message) {
+          const status = panel?.querySelector('.cache-refresh-status');
+          if (status) status.textContent = message;
+        }
+
+        function clearAndReload(event) {
+          const button = event?.currentTarget;
+          const panel = button?.closest('.cache-refresh-panel');
           clearLibraryCache();
           sessionStorage.setItem('player_library_manual_refresh', String(Date.now()));
-          window.location.reload();
+          localStorage.setItem(UI_KEY, JSON.stringify({ screen: 'home', selected: null, playerData: null }));
+          if (button) button.disabled = true;
+          setStatus(panel, 'Czyszczę cache i wymuszam pobranie bibliotek z addonów...');
+          const nextUrl = `${window.location.pathname || '/'}?refresh_libraries=${Date.now()}`;
+          setTimeout(() => window.location.replace(nextUrl), 200);
         }
 
         function enforceAutomaticRefresh() {
@@ -94,7 +121,7 @@
           panel.className = 'glass panel cache-refresh-panel';
           panel.innerHTML = `
             <h2>Odświeżenie bibliotek</h2>
-            <p>Wymuś pobranie nowych bibliotek albo ustaw, jak długo strona może używać zapamiętanej listy.</p>
+            <p>Wymuś pobranie nowych bibliotek z addonów albo ustaw, jak długo strona może używać zapamiętanej listy.</p>
             <label>Automatyczne odświeżenie co</label>
             <div>
               <input class="library-refresh-days" type="number" min="1" max="30" step="1" value="${getIntervalDays()}" />
@@ -102,14 +129,17 @@
             </div>
             <button class="primary library-refresh-now" type="button">Odśwież biblioteki teraz</button>
             <button class="library-refresh-save" type="button">Zapisz interwał</button>
-            <small>${lastRefreshLabel()}<br />Minimum: 24h. Maksimum: 30 dni. Domyślnie: 7 dni.</small>`;
+            <small>${lastRefreshLabel()}<br />Minimum: 24h. Maksimum: 30 dni. Domyślnie: 7 dni.</small>
+            <span class="cache-refresh-status"></span>`;
 
           panel.querySelector('.library-refresh-now').addEventListener('click', clearAndReload);
-          panel.querySelector('.library-refresh-save').addEventListener('click', () => {
+          panel.querySelector('.library-refresh-save').addEventListener('click', (event) => {
+            event.preventDefault();
             const input = panel.querySelector('.library-refresh-days');
             input.value = setIntervalDays(input.value);
             const small = panel.querySelector('small');
-            if (small) small.innerHTML = `${lastRefreshLabel()}<br />Interwał zapisany. Minimum: 24h. Maksimum: 30 dni.`;
+            if (small) small.innerHTML = `${lastRefreshLabel()}<br />Interwał zapisany: ${input.value} dni. Minimum: 24h. Maksimum: 30 dni.`;
+            setStatus(panel, `Zapisano automatyczne odświeżenie co ${input.value} dni.`);
           });
 
           grid.appendChild(panel);
