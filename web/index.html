@@ -24,8 +24,8 @@
       .allowed-card img { width: 58px; height: 86px; object-fit: cover; border-radius: 8px; background: #222; }
       .guest-helper-panel { border-top: 1px solid rgba(255,255,255,.08); padding-top: 12px; margin-top: 14px; }
       .cache-refresh-panel input { max-width: 120px; margin-right: 8px; }
-      .cache-refresh-panel small { color: #bbb; display: block; margin-top: 8px; line-height: 1.45; }
-      .cache-refresh-panel .cache-refresh-status { color: #ddd; display: block; margin-top: 8px; line-height: 1.45; }
+      .cache-refresh-panel small, .embedded-subtitles-panel small { color: #bbb; display: block; margin-top: 8px; line-height: 1.45; }
+      .cache-refresh-panel .cache-refresh-status, .embedded-subtitles-panel .embedded-subtitles-status { color: #ddd; display: block; margin-top: 8px; line-height: 1.45; }
       @keyframes playerToastCountdown { from { transform: scaleX(1); } to { transform: scaleX(0); } }
       .toast.timed-player-notice { position: relative; overflow: hidden; padding-bottom: 14px; }
       .toast.timed-player-notice::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: linear-gradient(90deg, #fff, rgba(255,255,255,.35)); transform-origin: left center; animation: playerToastCountdown 3s linear forwards; }
@@ -37,6 +37,12 @@
     <script>
       (() => {
         const originalFetch = window.fetch.bind(window);
+        const embeddedState = { hasPolishAddon: false, subtitlesLoaded: false, firstSeen: {}, loading: new Set(), loaded: new Set() };
+
+        function authHeaders(extra = {}) {
+          const token = localStorage.getItem('player_token');
+          return { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extra };
+        }
 
         function subtitleFormatLabel(value) {
           const map = { srt: 'SRT', vtt: 'VTT', ass: 'ASS', ssa: 'SSA', sub: 'SUB', mpl2: 'MPL2', sami: 'SAMI', smi: 'SAMI', ttml: 'TTML', dfxp: 'DFXP', unknown: '?' };
@@ -97,6 +103,84 @@
           return next;
         }
 
+        function isPolishText(value) {
+          const text = String(value || '').toLowerCase();
+          return /(^|\b)(pl|pol|polish|polski)(\b|$)/.test(text);
+        }
+
+        function subtitleLooksPolish(subtitle) {
+          return isPolishText([subtitle?.lang, subtitle?.language, subtitle?.langCode, subtitle?.iso, subtitle?.id, subtitle?.name, subtitle?.title].join(' '));
+        }
+
+        function hasPolishNativeTrack(video) {
+          try {
+            return Array.from(video?.textTracks || []).some((track) => !String(track.label || '').startsWith('Addon •') && isPolishText(`${track.language || ''} ${track.label || ''}`));
+          } catch { return false; }
+        }
+
+        function forceReactTrackRefresh(video) {
+          setTimeout(() => {
+            try { video.dispatchEvent(new Event('loadedmetadata', { bubbles: true })); } catch {}
+            try { video.dispatchEvent(new Event('canplay', { bubbles: true })); } catch {}
+          }, 80);
+        }
+
+        function addEmbeddedTrack(video, track, subtitle) {
+          const key = `ffmpeg-${track.index}`;
+          if (video.querySelector(`track[data-embedded-ffmpeg="${key}"]`)) return;
+          const trackEl = document.createElement('track');
+          const format = subtitleFormatLabel(subtitle.format || track.codec);
+          const cueCount = subtitle.cue_count || subtitle.cues?.length || 0;
+          const lang = track.language || subtitle.language || (track.polish ? 'pl' : 'und');
+          const label = `Film FFmpeg • ${track.polish ? 'Polski' : (track.label || lang || 'Napisy')} • ${format} • ${cueCount} cue`;
+          trackEl.kind = 'subtitles';
+          trackEl.label = label;
+          trackEl.srclang = lang;
+          trackEl.src = vttDataUrl(subtitle.vtt || cuesToVtt(subtitle.cues || []));
+          trackEl.dataset.embeddedFfmpeg = key;
+          trackEl.addEventListener('load', () => forceReactTrackRefresh(video), { once: true });
+          video.appendChild(trackEl);
+          forceReactTrackRefresh(video);
+        }
+
+        async function loadEmbeddedForVideo(video) {
+          const url = video?.currentSrc || video?.src;
+          if (!url || url.startsWith('data:') || url.startsWith('blob:')) return;
+          embeddedState.firstSeen[url] ||= Date.now();
+          if (!embeddedState.subtitlesLoaded && Date.now() - embeddedState.firstSeen[url] < 2500) return;
+          const nativePolish = hasPolishNativeTrack(video);
+          const key = `${url}|addon:${embeddedState.hasPolishAddon}|native:${nativePolish}`;
+          if (embeddedState.loading.has(key) || embeddedState.loaded.has(key)) return;
+          embeddedState.loading.add(key);
+          try {
+            const params = new URLSearchParams({ url, has_polish_addon: String(embeddedState.hasPolishAddon), has_polish_native: String(nativePolish) });
+            const scanResponse = await originalFetch(`/api/embedded-subtitles/scan?${params}`, { headers: authHeaders() });
+            if (!scanResponse.ok) return;
+            const scan = await scanResponse.json();
+            if (scan.skipped || !Array.isArray(scan.tracks)) { embeddedState.loaded.add(key); return; }
+            let candidates = scan.tracks.filter((track) => track.extractable);
+            candidates.sort((a, b) => Number(!b.polish) - Number(!a.polish));
+            if (scan.mode === 'auto') candidates = candidates.filter((track) => track.polish).slice(0, 2);
+            else candidates = candidates.slice(0, 5);
+            for (const track of candidates) {
+              const extractParams = new URLSearchParams({ url, stream_index: String(track.index) });
+              const extractResponse = await originalFetch(`/api/embedded-subtitles/extract?${extractParams}`, { headers: authHeaders() });
+              if (!extractResponse.ok) continue;
+              const subtitle = await extractResponse.json();
+              if (subtitle?.status === 'ready') addEmbeddedTrack(video, track, subtitle);
+            }
+            embeddedState.loaded.add(key);
+          } catch (err) {
+            console.warn('Embedded subtitles scan failed:', err);
+          } finally {
+            embeddedState.loading.delete(key);
+          }
+        }
+
+        function scheduleEmbeddedScan() {
+          setTimeout(() => document.querySelectorAll('.player-shell video, video').forEach(loadEmbeddedForVideo), 350);
+        }
+
         window.fetch = async (input, init = {}) => {
           const url = typeof input === 'string' ? input : input?.url;
           let nextInput = input;
@@ -104,23 +188,37 @@
             const separator = url.includes('?') ? '&' : '?';
             nextInput = `${url}${separator}_=${Date.now()}`;
           }
+          if (typeof url === 'string' && url.startsWith('/api/subtitles')) {
+            embeddedState.subtitlesLoaded = false;
+            embeddedState.hasPolishAddon = false;
+          }
 
           const response = await originalFetch(nextInput, init);
 
-          if (typeof url === 'string' && url.startsWith('/api/subtitles') && response.ok) {
-            const data = await response.clone().json().catch(() => null);
-            if (data && Array.isArray(data.subtitles)) {
-              const normalized = { ...data, subtitles: data.subtitles.map(normalizeSubtitleForPlayer) };
-              return new Response(JSON.stringify(normalized), {
-                status: response.status,
-                statusText: response.statusText,
-                headers: { 'Content-Type': 'application/json' },
-              });
+          if (typeof url === 'string' && url.startsWith('/api/subtitles')) {
+            embeddedState.subtitlesLoaded = true;
+            if (response.ok) {
+              const data = await response.clone().json().catch(() => null);
+              if (data && Array.isArray(data.subtitles)) {
+                const normalized = { ...data, subtitles: data.subtitles.map(normalizeSubtitleForPlayer) };
+                embeddedState.hasPolishAddon = normalized.subtitles.some(subtitleLooksPolish);
+                scheduleEmbeddedScan();
+                return new Response(JSON.stringify(normalized), {
+                  status: response.status,
+                  statusText: response.statusText,
+                  headers: { 'Content-Type': 'application/json' },
+                });
+              }
             }
+            scheduleEmbeddedScan();
           }
 
           return response;
         };
+
+        const videoObserver = new MutationObserver(scheduleEmbeddedScan);
+        videoObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] });
+        setInterval(scheduleEmbeddedScan, 2500);
       })();
     </script>
     <script>
@@ -132,6 +230,11 @@
         const MIN_DAYS = 1;
         const MAX_DAYS = 30;
         const DAY_MS = 24 * 60 * 60 * 1000;
+
+        function authHeaders(extra = {}) {
+          const token = localStorage.getItem('player_token');
+          return { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extra };
+        }
 
         function clampDays(value) {
           const parsed = Math.round(Number(value));
@@ -157,8 +260,8 @@
           localStorage.removeItem(CACHE_KEY);
         }
 
-        function setStatus(panel, message) {
-          const status = panel?.querySelector('.cache-refresh-status');
+        function setStatus(panel, message, selector = '.cache-refresh-status') {
+          const status = panel?.querySelector(selector);
           if (status) status.textContent = message;
         }
 
@@ -188,10 +291,8 @@
           return 'Ostatnie odświeżenie: ' + new Date(updatedAt).toLocaleString();
         }
 
-        function injectAdminControls() {
-          const grid = document.querySelector('main.admin .admin-grid');
+        function injectCacheControls(grid) {
           if (!grid || grid.querySelector('.cache-refresh-panel')) return;
-
           const panel = document.createElement('div');
           panel.className = 'glass panel cache-refresh-panel';
           panel.innerHTML = `
@@ -216,8 +317,50 @@
             if (small) small.innerHTML = `${lastRefreshLabel()}<br />Interwał zapisany: ${input.value} dni. Minimum: 24h. Maksimum: 30 dni.`;
             setStatus(panel, `Zapisano automatyczne odświeżenie co ${input.value} dni.`);
           });
-
           grid.appendChild(panel);
+        }
+
+        function injectEmbeddedSubtitleControls(grid) {
+          if (!grid || grid.querySelector('.embedded-subtitles-panel')) return;
+          const panel = document.createElement('div');
+          panel.className = 'glass panel embedded-subtitles-panel';
+          panel.innerHTML = `
+            <h2>Napisy osadzone w filmie</h2>
+            <p>Kontroluje użycie FFprobe/FFmpeg do wykrywania i wyciągania tekstowych napisów z pliku wideo.</p>
+            <label>Tryb FFmpeg dla napisów embedded</label>
+            <select class="embedded-subtitles-mode">
+              <option value="off">Wyłącz</option>
+              <option value="auto">Auto</option>
+              <option value="on">Włącz</option>
+            </select>
+            <button class="primary embedded-subtitles-save" type="button">Zapisz tryb</button>
+            <small>Auto: FFmpeg uruchamia się tylko, gdy nie ma polskich napisów z addonu ani polskich ścieżek wykrytych natywnie przez przeglądarkę. Włącz: skanuje tekstowe ścieżki embedded. Wyłącz: nie używa FFmpeg.</small>
+            <span class="embedded-subtitles-status">Ładowanie ustawienia...</span>`;
+
+          const select = panel.querySelector('.embedded-subtitles-mode');
+          fetch('/api/embedded-subtitles/settings', { headers: authHeaders() })
+            .then((r) => r.ok ? r.json() : Promise.reject(new Error('Nie udało się pobrać ustawienia')))
+            .then((data) => { select.value = data.mode || 'auto'; setStatus(panel, `Aktualny tryb: ${select.value}`, '.embedded-subtitles-status'); })
+            .catch((err) => setStatus(panel, err.message, '.embedded-subtitles-status'));
+
+          panel.querySelector('.embedded-subtitles-save').addEventListener('click', async () => {
+            try {
+              const response = await fetch('/api/admin/embedded-subtitles/settings', { method: 'PUT', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ mode: select.value }) });
+              if (!response.ok) throw new Error(await response.text());
+              const data = await response.json();
+              setStatus(panel, `Zapisano tryb: ${data.mode}`, '.embedded-subtitles-status');
+            } catch (err) {
+              setStatus(panel, `Błąd zapisu: ${err.message}`, '.embedded-subtitles-status');
+            }
+          });
+          grid.appendChild(panel);
+        }
+
+        function injectAdminControls() {
+          const grid = document.querySelector('main.admin .admin-grid');
+          if (!grid) return;
+          injectCacheControls(grid);
+          injectEmbeddedSubtitleControls(grid);
         }
 
         enforceAutomaticRefresh();
