@@ -168,3 +168,6 @@ async def fetch_streams(base_url: str, content_type: str, content_id: str) -> di
 
 async def fetch_subtitles(base_url: str, content_type: str, content_id: str) -> dict:
     return await fetch_json(base_url, f"subtitles/{safe_path_part(content_type)}/{safe_path_part(content_id)}.json", timeout_seconds=30)
+
+
+from .subtitle_normalizer import fetch_subtitles as fetch_subtitles
