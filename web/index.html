@@ -37,14 +37,89 @@
     <script>
       (() => {
         const originalFetch = window.fetch.bind(window);
-        window.fetch = (input, init = {}) => {
+
+        function subtitleFormatLabel(value) {
+          const map = { srt: 'SRT', vtt: 'VTT', ass: 'ASS', ssa: 'SSA', sub: 'SUB', mpl2: 'MPL2', sami: 'SAMI', smi: 'SAMI', ttml: 'TTML', dfxp: 'DFXP', unknown: '?' };
+          return map[String(value || '').toLowerCase()] || String(value || '?').toUpperCase();
+        }
+
+        function formatTimestamp(seconds) {
+          const totalMs = Math.max(0, Math.round(Number(seconds || 0) * 1000));
+          const ms = totalMs % 1000;
+          const totalSeconds = Math.floor(totalMs / 1000);
+          const s = totalSeconds % 60;
+          const m = Math.floor(totalSeconds / 60) % 60;
+          const h = Math.floor(totalSeconds / 3600);
+          return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+        }
+
+        function cuesToVtt(cues) {
+          const lines = ['WEBVTT', ''];
+          (cues || []).forEach((cue, index) => {
+            lines.push(String(index + 1));
+            lines.push(`${formatTimestamp(cue.start)} --> ${formatTimestamp(cue.end)}`);
+            lines.push(String(cue.text || ''));
+            lines.push('');
+          });
+          return lines.join('\n');
+        }
+
+        function vttDataUrl(vtt) {
+          return `data:text/vtt;charset=utf-8,${encodeURIComponent(vtt || 'WEBVTT\n\n')}`;
+        }
+
+        function subtitleStatusLabel(subtitle) {
+          if (subtitle?.status === 'ready') return `${subtitle.cue_count || subtitle.cues?.length || 0} cue`;
+          if (subtitle?.status === 'error') return 'błąd';
+          return 'surowe';
+        }
+
+        function normalizeSubtitleForPlayer(subtitle, index) {
+          if (!subtitle || typeof subtitle !== 'object') return subtitle;
+          const next = { ...subtitle };
+          const format = subtitleFormatLabel(next.format);
+          const status = subtitleStatusLabel(next);
+          const baseName = next.name || next.title || next.addon || `Napisy ${index + 1}`;
+          next.name = `${baseName} [${format} • ${status}]`;
+          next.title = next.name;
+
+          if (next.vtt || Array.isArray(next.cues) || next.status === 'error') {
+            const vtt = next.vtt || cuesToVtt(next.cues || []);
+            delete next.original_url;
+            next.url = vttDataUrl(vtt);
+            next.file = '';
+          }
+
+          if (next.status === 'error' && next.error) {
+            next.name = `${baseName} [${format} • błąd: ${String(next.error).slice(0, 80)}]`;
+            next.title = next.name;
+          }
+          return next;
+        }
+
+        window.fetch = async (input, init = {}) => {
           const url = typeof input === 'string' ? input : input?.url;
+          let nextInput = input;
           if (typeof url === 'string' && (url.startsWith('/api/catalogs') || url.startsWith('/api/playback/history'))) {
             const separator = url.includes('?') ? '&' : '?';
-            const nextUrl = `${url}${separator}_=${Date.now()}`;
-            return originalFetch(nextUrl, { ...init, cache: 'no-store' });
+            nextInput = `${url}${separator}_=${Date.now()}`;
           }
-          return originalFetch(input, init);
+
+          const response = await originalFetch(nextInput, init);
+
+          if (typeof url === 'string' && url.startsWith('/api/subtitles') && response.ok) {
+            const data = await response.clone().json().catch(() => null);
+            if (data && Array.isArray(data.subtitles)) {
+              const normalized = { ...data, subtitles: data.subtitles.map(normalizeSubtitleForPlayer) };
+              return new Response(JSON.stringify(normalized), {
+                status: response.status,
+                statusText: response.statusText,
+                headers: { 'Content-Type': 'application/json' },
+              });
+            }
+          }
+
+          return response;
         };
       })();
     </script>
