@@ -12,7 +12,7 @@ import httpx
 
 from .addons import AddonError, fetch_json, safe_path_part
 
-SUBTITLE_FETCH_RETRY_DELAYS_SECONDS = (1.5, 3.5, 6.0)
+SUBTITLE_FETCH_RETRY_DELAYS_SECONDS = (1.5, 3.5, 6.0, 15.0, 30.0)
 
 def normalize_newlines(text: str) -> str:
     return text.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
