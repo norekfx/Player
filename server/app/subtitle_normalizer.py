@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from html import unescape
 from urllib.parse import urlparse
+import asyncio
 import gzip
 import io
 import re
@@ -10,6 +11,8 @@ import zipfile
 import httpx
 
 from .addons import AddonError, fetch_json, safe_path_part
+
+SUBTITLE_FETCH_RETRY_DELAYS_SECONDS = (1.5, 3.5, 6.0)
 
 def normalize_newlines(text: str) -> str:
     return text.replace("\ufeff", "").replace("\r\n", "\n").replace("\r", "\n")
@@ -257,10 +260,45 @@ async def normalize_subtitle_item(client: httpx.AsyncClient, subtitle: dict) -> 
     return normalized
 
 
+def subtitle_items(data: dict) -> list[dict]:
+    return [item for item in data.get("subtitles", []) if isinstance(item, dict)]
+
+
+async def fetch_subtitle_payload_with_retry(base_url: str, content_type: str, content_id: str) -> tuple[dict, int]:
+    path = f"subtitles/{safe_path_part(content_type)}/{safe_path_part(content_id)}.json"
+    last_data: dict = {"subtitles": []}
+    last_error: AddonError | None = None
+    got_response = False
+
+    for attempt in range(1, len(SUBTITLE_FETCH_RETRY_DELAYS_SECONDS) + 2):
+        if attempt > 1:
+            await asyncio.sleep(SUBTITLE_FETCH_RETRY_DELAYS_SECONDS[attempt - 2])
+        try:
+            data = await fetch_json(base_url, path, timeout_seconds=30)
+        except AddonError as exc:
+            # 404 usually means the addon does not implement subtitles for this item,
+            # so retrying would only slow down the player.
+            if "HTTP 404" in str(exc):
+                raise
+            last_error = exc
+            continue
+
+        got_response = True
+        last_data = data
+        if subtitle_items(data):
+            return data, attempt
+
+    if last_error and not got_response:
+        raise last_error
+    return last_data, len(SUBTITLE_FETCH_RETRY_DELAYS_SECONDS) + 1
+
+
 async def fetch_subtitles(base_url: str, content_type: str, content_id: str) -> dict:
-    data = await fetch_json(base_url, f"subtitles/{safe_path_part(content_type)}/{safe_path_part(content_id)}.json", timeout_seconds=30)
-    subtitles = [item for item in data.get("subtitles", []) if isinstance(item, dict)]
+    data, attempts = await fetch_subtitle_payload_with_retry(base_url, content_type, content_id)
+    subtitles = subtitle_items(data)
     timeout = httpx.Timeout(20, connect=10)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
         data["subtitles"] = [await normalize_subtitle_item(client, item) for item in subtitles]
+    data["subtitle_fetch_attempts"] = attempts
+    data["subtitle_fetch_retry_exhausted"] = attempts > 1 and not data["subtitles"]
     return data
